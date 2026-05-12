@@ -430,9 +430,11 @@ def build_command(
     do_align: bool,
     do_sanger: bool,
     do_word: bool,
+    make_pdf: bool,
     zip_pdfs: bool,
     flank: int,
     align_flank: int,
+    max_render_cols: int,
     max_product: int,
     align_samples: str,
     group_a: str,
@@ -464,7 +466,11 @@ def build_command(
         str(align_flank),
         "--max-product",
         str(max_product),
+        "--max-render-cols",
+        str(max_render_cols),
     ]
+    if not make_pdf:
+        cmd += ["--skip-pdf"]
     if analysis_mode != "direct":
         cmd += ["--primer-table", str(primer_table)]
     for fasta in fasta_paths:
@@ -496,7 +502,7 @@ def build_command(
             cmd += ["--number-map", number_map]
         if do_word:
             cmd += ["--word-report"]
-    if zip_pdfs:
+    if zip_pdfs and make_pdf:
         cmd += ["--zip-pdfs"]
     return cmd
 
@@ -790,16 +796,18 @@ with mode_cols[0]:
     )
     m1, m2, m3 = st.columns(3)
     with m1:
-        do_stage1 = st.checkbox("理论扩增片段 PDF", value=analysis_mode == "primer", disabled=analysis_mode == "direct")
+        do_stage1 = st.checkbox("理论扩增片段报告", value=analysis_mode == "primer", disabled=analysis_mode == "direct")
     with m2:
-        do_align = st.checkbox("多样本序列比对 PDF", value=True, disabled=analysis_mode == "direct")
+        do_align = st.checkbox("多样本序列比对报告", value=True, disabled=analysis_mode == "direct")
     with m3:
         do_sanger = st.checkbox("胶回收测序验证", value=False, disabled=analysis_mode == "direct")
-    m4, m5 = st.columns(2)
+    m4, m5, m6 = st.columns(3)
     with m4:
         do_word = st.checkbox("生成 Word 汇总报告", value=False, disabled=not do_sanger)
     with m5:
-        zip_pdfs = st.checkbox("生成 PDF 压缩包", value=True)
+        make_pdf = st.checkbox("生成 PDF 报告（较慢）", value=False, help="快速查看结果时建议先不勾选；需要正式留档或分享 PDF 时再勾选。")
+    with m6:
+        zip_pdfs = st.checkbox("生成 PDF 压缩包", value=False, disabled=not make_pdf)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with mode_cols[1]:
@@ -817,7 +825,7 @@ with mode_cols[1]:
     )
     align_samples = st.text_input("参与比对的样本", "all")
     if analysis_mode == "direct":
-        st.caption("直接比对支持一个多序列 FASTA，或多个 FASTA 文件。分组比较为可选。")
+        st.caption("直接比对支持一个多序列 FASTA，或多个 FASTA 文件；长序列默认使用内置锚点算法，不依赖 MAFFT。分组比较为可选。")
         group_a = st.text_input("A 组样本（可选）", "", placeholder="例如 sample1,sample2")
         group_b = st.text_input("B 组样本（可选）", "", placeholder="例如 sample3,sample4")
     else:
@@ -839,6 +847,17 @@ with mode_cols[1]:
     p3, _ = st.columns(2)
     with p3:
         max_product = st.number_input("最大扩增长度 bp", min_value=100, max_value=50000, value=5000, step=100)
+    if analysis_mode == "direct":
+        max_render_cols = st.number_input(
+            "完整碱基图最大绘制列数",
+            min_value=0,
+            max_value=200000,
+            value=3000,
+            step=500,
+            help="长序列绘制完整彩色碱基图会明显变慢；超过该长度时仍会生成完整 alignment FASTA 和所有统计表。填 0 表示不限制。",
+        )
+    else:
+        max_render_cols = 3000
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -1014,9 +1033,11 @@ with tab_run:
             do_align=do_align,
             do_sanger=do_sanger,
             do_word=do_word,
+            make_pdf=make_pdf,
             zip_pdfs=zip_pdfs,
             flank=int(flank),
             align_flank=int(align_flank),
+            max_render_cols=int(max_render_cols),
             max_product=int(max_product),
             align_samples=align_samples,
             group_a=group_a,
@@ -1038,8 +1059,11 @@ with tab_run:
             st.session_state.last_zip = str(zip_path)
             st.success("分析完成")
             show_result_preview(result_dir)
+            bundle_note = "压缩包包含 HTML 预览、CSV 表格、FASTA/Newick 等数据文件和可选 Word 报告。"
+            if make_pdf:
+                bundle_note = "压缩包包含 PDF、HTML 预览、CSV 表格、FASTA/Newick 等数据文件和可选 Word 报告。"
             st.markdown(
-                "<div class='result-ready'><strong>完整结果包已生成</strong><span class='muted'>压缩包包含 PDF、CSV 表格、序列比对文件和可选 Word 报告。</span></div>",
+                f"<div class='result-ready'><strong>完整结果包已生成</strong><span class='muted'>{bundle_note}</span></div>",
                 unsafe_allow_html=True,
             )
             st.download_button(

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import zipfile
 from dataclasses import dataclass
@@ -562,7 +563,7 @@ def marked_sequence(hit: AmpliconHit, primer: PrimerPair, genome_len: int, line_
     return "\n".join(out)
 
 
-def stage1_sample_reports(root: Path, primers: list[PrimerPair], records: list[FastaRecord], flank: int, max_product: int) -> dict[tuple[str, str], list[AmpliconHit]]:
+def stage1_sample_reports(root: Path, primers: list[PrimerPair], records: list[FastaRecord], flank: int, max_product: int, make_pdf: bool = True) -> dict[tuple[str, str], list[AmpliconHit]]:
     stage = root / "01_sample_amplicon_reports"
     html_dir = stage / "html"
     pdf_dir = stage / "pdf"
@@ -602,7 +603,8 @@ def stage1_sample_reports(root: Path, primers: list[PrimerPair], records: list[F
         pdf_path = pdf_dir / f"{safe_name(rec.sample)}_amplicons.pdf"
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.write_text(html_doc(f"{rec.sample} amplicons", "\n".join(body)), encoding="utf-8")
-        edge_print_pdf(html_path, pdf_path)
+        if make_pdf:
+            edge_print_pdf(html_path, pdf_path)
 
     fields = [
         "sample",
@@ -688,14 +690,14 @@ def nw(ref: str, seq: str) -> tuple[str, str]:
     return "".join(reversed(ar)), "".join(reversed(aq))
 
 
-def msa_to_first(records: list[tuple[str, str]]) -> list[tuple[str, str]]:
+def msa_to_first_with_aligner(records: list[tuple[str, str]], aligner) -> list[tuple[str, str]]:
     if not records:
         return []
     ref = records[0][1]
     max_ins = [0] * (len(ref) + 1)
     paired = []
     for name, seq in records:
-        ar, aq = nw(ref, seq)
+        ar, aq = aligner(ref, seq)
         inserts = [[] for _ in range(len(ref) + 1)]
         bases = ["-"] * len(ref)
         pos = 0
@@ -720,6 +722,201 @@ def msa_to_first(records: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return out
 
 
+def msa_to_first(records: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return msa_to_first_with_aligner(records, nw)
+
+
+def build_unique_kmer_index(ref: str, k: int = 17) -> dict[str, int]:
+    index: dict[str, int] = {}
+    duplicate: set[str] = set()
+    limit = len(ref) - k + 1
+    for i in range(max(0, limit)):
+        kmer = ref[i : i + k]
+        if "N" in kmer or "-" in kmer:
+            continue
+        if kmer in index:
+            duplicate.add(kmer)
+        else:
+            index[kmer] = i
+    for kmer in duplicate:
+        index.pop(kmer, None)
+    return index
+
+
+def chain_anchors(ref: str, query: str, index: dict[str, int], k: int = 17, step: int = 8) -> list[tuple[int, int]]:
+    anchors: list[tuple[int, int]] = []
+    q_limit = len(query) - k + 1
+    for q in range(0, max(0, q_limit), max(1, step)):
+        r = index.get(query[q : q + k])
+        if r is not None:
+            anchors.append((r, q))
+    if not anchors:
+        return []
+    anchors.sort(key=lambda x: (x[1], x[0]))
+    tails: list[int] = []
+    tail_idx: list[int] = []
+    prev = [-1] * len(anchors)
+    import bisect
+
+    for i, (r, _q) in enumerate(anchors):
+        pos = bisect.bisect_left(tails, r)
+        if pos == len(tails):
+            tails.append(r)
+            tail_idx.append(i)
+        else:
+            tails[pos] = r
+            tail_idx[pos] = i
+        if pos > 0:
+            prev[i] = tail_idx[pos - 1]
+    out: list[tuple[int, int]] = []
+    cur = tail_idx[-1]
+    while cur >= 0:
+        out.append(anchors[cur])
+        cur = prev[cur]
+    out.reverse()
+    filtered: list[tuple[int, int]] = []
+    last_r = last_q = -k
+    for r, q in out:
+        if r >= last_r + k and q >= last_q + k:
+            filtered.append((r, q))
+            last_r, last_q = r, q
+    return filtered
+
+
+def align_small_or_pad(ref_part: str, query_part: str, max_cells: int = 250_000) -> tuple[str, str]:
+    if not ref_part and not query_part:
+        return "", ""
+    if not ref_part:
+        return "-" * len(query_part), query_part
+    if not query_part:
+        return ref_part, "-" * len(ref_part)
+    if len(ref_part) == len(query_part):
+        return ref_part, query_part
+    if len(ref_part) * len(query_part) <= max_cells:
+        return nw(ref_part, query_part)
+    size = max(len(ref_part), len(query_part))
+    return ref_part + "-" * (size - len(ref_part)), query_part + "-" * (size - len(query_part))
+
+
+def anchored_pairwise(ref: str, query: str, index: dict[str, int] | None = None, k: int = 17) -> tuple[str, str]:
+    if ref == query:
+        return ref, query
+    if len(ref) == len(query):
+        return ref, query
+    index = index or build_unique_kmer_index(ref, k)
+    step = 4 if max(len(ref), len(query)) < 50_000 else 10
+    anchors = chain_anchors(ref, query, index, k, step)
+    min_anchors = max(4, min(len(ref), len(query)) // 20_000)
+    if len(anchors) < min_anchors:
+        cells = len(ref) * len(query)
+        if cells <= 8_000_000:
+            return nw(ref, query)
+        raise RuntimeError("Not enough collinear anchors were found for the built-in long-sequence aligner.")
+    ar: list[str] = []
+    aq: list[str] = []
+    last_r = last_q = 0
+    for r, q in anchors:
+        if r < last_r or q < last_q:
+            continue
+        pr, pq = align_small_or_pad(ref[last_r:r], query[last_q:q])
+        ar.append(pr)
+        aq.append(pq)
+        ar.append(ref[r : r + k])
+        aq.append(query[q : q + k])
+        last_r = r + k
+        last_q = q + k
+    pr, pq = align_small_or_pad(ref[last_r:], query[last_q:])
+    ar.append(pr)
+    aq.append(pq)
+    return "".join(ar), "".join(aq)
+
+
+def anchored_msa_to_first(records: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if not records:
+        return []
+    ref = records[0][1]
+    index = build_unique_kmer_index(ref, 17)
+
+    def aligner(a: str, b: str) -> tuple[str, str]:
+        if a == ref:
+            return anchored_pairwise(a, b, index=index, k=17)
+        return anchored_pairwise(a, b, k=17)
+
+    return msa_to_first_with_aligner(records, aligner)
+
+
+def parse_fasta_text(text: str) -> dict[str, str]:
+    records: dict[str, str] = {}
+    name = ""
+    parts: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if name:
+                records[name] = "".join(parts).upper()
+            name = line[1:].strip().split()[0]
+            parts = []
+        else:
+            parts.append(re.sub(r"[^A-Za-z-]", "", line).upper())
+    if name:
+        records[name] = "".join(parts).upper()
+    return records
+
+
+def mafft_msa(records: list[tuple[str, str]], timeout_seconds: int = 900) -> list[tuple[str, str]]:
+    mafft = shutil.which("mafft")
+    if not mafft:
+        raise RuntimeError("MAFFT is not installed.")
+    with tempfile.TemporaryDirectory(prefix="msa_mafft_") as td:
+        input_path = Path(td) / "input.fasta"
+        id_to_name: dict[str, str] = {}
+        with input_path.open("w", encoding="ascii") as f:
+            for idx, (name, seq) in enumerate(records, 1):
+                seq_id = f"seq_{idx}"
+                id_to_name[seq_id] = name
+                f.write(f">{seq_id}\n{textwrap.fill(seq, 80)}\n")
+        proc = subprocess.run(
+            [mafft, "--auto", "--quiet", str(input_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+        if proc.returncode != 0:
+            msg = (proc.stderr or proc.stdout or "MAFFT failed.").strip()
+            raise RuntimeError(msg[-1000:])
+        parsed = parse_fasta_text(proc.stdout)
+    return [(name, parsed.get(seq_id, "")) for seq_id, name in id_to_name.items()]
+
+
+def direct_msa(records: list[tuple[str, str]], use_mafft: bool = False) -> tuple[list[tuple[str, str]], str]:
+    if len(records) <= 1:
+        return records, "single_sequence"
+    lengths = [len(seq) for _name, seq in records]
+    if use_mafft and shutil.which("mafft"):
+        return mafft_msa(records), "MAFFT --auto"
+    if len(set(lengths)) == 1:
+        return records, "same_length_direct"
+    if max(lengths) >= 2000:
+        try:
+            return anchored_msa_to_first(records), "built_in_anchor_long_sequence"
+        except RuntimeError as exc:
+            if use_mafft and shutil.which("mafft"):
+                return mafft_msa(records), "MAFFT --auto"
+            raise SystemExit(
+                f"{exc} This usually means the sequences are not collinear enough for the built-in fast aligner. "
+                "Please upload shorter homologous regions, make sure sequences are in the same orientation, or enable/deploy MAFFT."
+            )
+    estimated_cells = len(records[0][1]) * sum(len(seq) for _name, seq in records[1:])
+    if estimated_cells > 8_000_000:
+        return anchored_msa_to_first(records), "built_in_anchor_long_sequence"
+    return msa_to_first(records), "built_in_pairwise_fallback"
+
+
 def variant_columns(aln: list[tuple[str, str]]) -> list[int]:
     if not aln:
         return []
@@ -730,6 +927,16 @@ def variant_columns(aln: list[tuple[str, str]]) -> list[int]:
         if len(states) > 1:
             cols.append(i)
     return cols
+
+
+def variant_rows_from_alignment(aln: list[tuple[str, str]], position_labels: dict[int, str] | None = None) -> list[dict]:
+    rows: list[dict] = []
+    for pos in variant_columns(aln):
+        states = "".join(sorted({seq[pos] for _, seq in aln}))
+        typ = "InDel" if "-" in states else "SNV"
+        label = (position_labels or {}).get(pos, str(pos + 1))
+        rows.append({"alignment_col": pos + 1, "position_label": label, "type": typ, "states": states})
+    return rows
 
 
 def parse_sample_list(text: str | None) -> set[str]:
@@ -1281,6 +1488,7 @@ def stage2_alignment_reports(
     align_samples: str,
     colors: dict[str, str],
     align_flank: int | None = None,
+    make_pdf: bool = True,
 ):
     stage = root / "02_multi_sequence_alignment"
     pdf_dir = stage / "pdf"
@@ -1336,7 +1544,8 @@ def stage2_alignment_reports(
         pdf_path = pdf_dir / f"{safe_name(primer.pair_name)}.alignment.pdf"
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.write_text(html_doc(f"{primer.pair_name} alignment", body, landscape=True), encoding="utf-8")
-        edge_print_pdf(html_path, pdf_path)
+        if make_pdf:
+            edge_print_pdf(html_path, pdf_path)
         summary.append(
             {
                 "primer_order": primer.order,
@@ -1344,7 +1553,7 @@ def stage2_alignment_reports(
                 "aligned_samples": len(seqs),
                 "missing_samples": ";".join(missing),
                 "variant_sites": len(variant_rows),
-                "pdf": str(pdf_path),
+                "pdf": str(pdf_path) if make_pdf else "",
                 "alignment_fasta": str(fasta_path),
                 "variant_table": str(variant_path),
             }
@@ -1359,6 +1568,9 @@ def direct_alignment_report(
     title: str = "直接多序列比对",
     group_a: str | None = None,
     group_b: str | None = None,
+    make_pdf: bool = True,
+    max_render_cols: int = 3000,
+    use_mafft: bool = False,
 ):
     stage = root / "02_direct_sequence_alignment"
     pdf_dir = stage / "pdf"
@@ -1368,7 +1580,7 @@ def direct_alignment_report(
     stats_dir = stage / "analysis_tables"
     consensus_dir = stage / "consensus_fasta"
     seqs = [(r.sample, r.seq) for r in records if r.seq]
-    aln = msa_to_first(seqs)
+    aln, alignment_method = direct_msa(seqs, use_mafft=use_mafft)
     fasta_path = fasta_dir / "direct_alignment.fasta"
     fasta_path.parent.mkdir(parents=True, exist_ok=True)
     with fasta_path.open("w", encoding="ascii") as f:
@@ -1383,7 +1595,16 @@ def direct_alignment_report(
                 position_labels[col] = str(ref_pos)
             else:
                 position_labels[col] = f"gap_after_{ref_pos}"
-    svg, variant_rows = alignment_pdf_svg(aln, title, colors, position_labels, primer_marks=None, chunk_size=90)
+    alignment_len = len(aln[0][1]) if aln else 0
+    if max_render_cols > 0 and alignment_len > max_render_cols:
+        variant_rows = variant_rows_from_alignment(aln, position_labels)
+        svg = (
+            "<div style='border:1px solid #d0d5dd;border-radius:8px;padding:12px;background:#f8fafc'>"
+            f"<b>完整碱基图已自动跳过</b><p>本次比对长度为 {alignment_len} bp，超过当前绘图上限 {max_render_cols} bp。"
+            "为加快分析，页面优先生成结果概览、变异位点矩阵、单倍型、相似度矩阵和完整 alignment FASTA。</p></div>"
+        )
+    else:
+        svg, variant_rows = alignment_pdf_svg(aln, title, colors, position_labels, primer_marks=None, chunk_size=90)
     variant_path = table_dir / "direct_alignment.variant_sites.csv"
     write_csv(variant_path, variant_rows, ["alignment_col", "position_label", "type", "states"])
     quality_rows = input_quality_report(records)
@@ -1407,7 +1628,7 @@ def direct_alignment_report(
     write_csv(stats_dir / "haplotypes.csv", hap_rows, ["haplotype", "sample_count", "samples", "variant_signature", "sequence_length_no_gaps"])
     write_csv(
         stats_dir / "analysis_overview.csv",
-        [{"metric": key, "value": value} for key, value in stats.items()],
+        [{"metric": "alignment_method", "value": alignment_method}] + [{"metric": key, "value": value} for key, value in stats.items()],
         ["metric", "value"],
     )
     consensus_path = consensus_dir / "direct_alignment_consensus.fasta"
@@ -1426,13 +1647,14 @@ def direct_alignment_report(
         {
             "alignment": "direct_alignment",
             "aligned_samples": len(seqs),
+            "alignment_method": alignment_method,
             "haplotypes": len(hap_rows),
             "variant_sites": len(variant_rows),
             "snp_sites": stats["snp_sites"],
             "indel_sites": stats["indel_sites"],
             "conserved_percent": stats["conserved_percent"],
             "html": str(html_dir / "direct_alignment.html"),
-            "pdf": str(pdf_dir / "direct_alignment.pdf"),
+            "pdf": str(pdf_dir / "direct_alignment.pdf") if make_pdf else "",
             "alignment_fasta": str(fasta_path),
             "consensus_fasta": str(consensus_path),
             "haplotype_fasta": str(haplotype_fasta_path),
@@ -1446,7 +1668,7 @@ def direct_alignment_report(
     ]
     body = (
         f"<h1>{html.escape(title)}</h1>"
-        f"<p>Samples: {len(seqs)} aligned. Reference coordinate labels use the first uploaded sequence.</p>"
+        f"<p>Samples: {len(seqs)} aligned. Alignment method: {html.escape(alignment_method)}. Reference coordinate labels use the first uploaded sequence.</p>"
         f"<div class='metric-grid'>"
         f"<div><b>{stats['samples']}</b><span>样本数</span></div>"
         f"<div><b>{stats['alignment_length']}</b><span>比对长度</span></div>"
@@ -1470,13 +1692,15 @@ def direct_alignment_report(
     pdf_path = pdf_dir / "direct_alignment.pdf"
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html_doc(title, body, landscape=True), encoding="utf-8")
-    edge_print_pdf(html_path, pdf_path)
+    if make_pdf:
+        edge_print_pdf(html_path, pdf_path)
     write_csv(
         stage / "direct_alignment_summary.csv",
         summary,
         [
             "alignment",
             "aligned_samples",
+            "alignment_method",
             "haplotypes",
             "variant_sites",
             "snp_sites",
@@ -1830,6 +2054,7 @@ def stage3_sanger_compare(
     hits: dict[tuple[str, str], list[AmpliconHit]],
     sanger_dir: Path,
     number_map: dict[str, str],
+    make_pdf: bool = True,
 ):
     stage = root / "03_sanger_vs_theory"
     pdf_dir = stage / "pdf"
@@ -1924,7 +2149,8 @@ def stage3_sanger_compare(
         pdf_path = pdf_dir / f"{safe_name(primer.pair_name)}.sanger_vs_theory.pdf"
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.write_text(html_doc(f"{primer.pair_name} sanger vs theory", "\n".join(body), landscape=True), encoding="utf-8")
-        edge_print_pdf(html_path, pdf_path)
+        if make_pdf:
+            edge_print_pdf(html_path, pdf_path)
 
     if summary_rows:
         fields = list(summary_rows[0].keys())
@@ -2011,6 +2237,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--color-gap", default=None)
         p.add_argument("--group-a", default=None, help="Optional group A sample names for direct alignment comparison")
         p.add_argument("--group-b", default=None, help="Optional group B sample names for direct alignment comparison")
+        p.add_argument("--use-mafft", action="store_true", help="Optionally use MAFFT when it is installed; built-in fast aligner is used by default")
+        p.add_argument("--skip-pdf", action="store_true", help="Generate HTML and data tables only; skip slow PDF printing")
+        p.add_argument("--max-render-cols", type=int, default=3000, help="Direct alignment base-map render limit; longer alignments keep tables/FASTA but skip full colored base map")
+        p.add_argument("--max-total-bp", type=int, default=3_000_000, help="Safety limit for total uploaded direct-alignment sequence length")
         p.add_argument("--zip-pdfs", action="store_true")
         p.add_argument("--sanger-dir", help="Gel-recovered sequencing result folder")
         p.add_argument("--number-map", help="Sequencing number to sample map, e.g. 1=11,2=51,3=1")
@@ -2026,8 +2256,11 @@ def main(argv: list[str] | None = None) -> int:
         if not records:
             raise SystemExit("No genome FASTA records found.")
         input_index(root, [], records)
-        direct_alignment_report(root, records, parse_colors(args), group_a=args.group_a, group_b=args.group_b)
-        if args.zip_pdfs:
+        total_bp = sum(len(r.seq) for r in records)
+        if total_bp > args.max_total_bp:
+            raise SystemExit(f"Total sequence length {total_bp} bp exceeds the public-site safety limit {args.max_total_bp} bp. Please upload fewer/shorter sequences.")
+        direct_alignment_report(root, records, parse_colors(args), group_a=args.group_a, group_b=args.group_b, make_pdf=not args.skip_pdf, max_render_cols=args.max_render_cols, use_mafft=args.use_mafft)
+        if args.zip_pdfs and not args.skip_pdf:
             zip_path = zip_pdfs(root)
             print(f"PDF zip: {zip_path}")
         print(root)
@@ -2047,17 +2280,17 @@ def main(argv: list[str] | None = None) -> int:
     if not records:
         raise SystemExit("No genome FASTA records found.")
     input_index(root, primers, records)
-    hits = stage1_sample_reports(root, primers, records, args.flank, args.max_product)
+    hits = stage1_sample_reports(root, primers, records, args.flank, args.max_product, make_pdf=not args.skip_pdf)
     if args.cmd in {"align", "full"}:
-        stage2_alignment_reports(root, primers, records, hits, args.align_samples, parse_colors(args), args.align_flank if args.align_flank is not None else args.flank)
+        stage2_alignment_reports(root, primers, records, hits, args.align_samples, parse_colors(args), args.align_flank if args.align_flank is not None else args.flank, make_pdf=not args.skip_pdf)
     if args.cmd in {"sanger-compare", "full"} and args.sanger_dir:
-        sanger_summary, sanger_missing = stage3_sanger_compare(root, primers, records, hits, Path(args.sanger_dir), parse_number_map(args.number_map))
+        sanger_summary, sanger_missing = stage3_sanger_compare(root, primers, records, hits, Path(args.sanger_dir), parse_number_map(args.number_map), make_pdf=not args.skip_pdf)
         if args.word_report:
             docx = create_stage3_word_report(root, sanger_summary, sanger_missing)
             print(f"Word report: {docx}")
     elif args.sanger_dir:
         classify_sanger_files(Path(args.sanger_dir), root / "03_sanger_vs_theory")
-    if args.zip_pdfs:
+    if args.zip_pdfs and not args.skip_pdf:
         zip_path = zip_pdfs(root)
         print(f"PDF zip: {zip_path}")
     print(root)
