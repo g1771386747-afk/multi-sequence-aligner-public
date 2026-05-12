@@ -949,6 +949,20 @@ def parse_sample_list(text: str | None) -> set[str]:
     return {s.strip() for s in re.split(r"[,;，；\s]+", text or "") if s.strip()}
 
 
+def reorder_records_by_reference(records: list[tuple[str, str]], reference_name: str | None) -> tuple[list[tuple[str, str]], str | None]:
+    ref = (reference_name or "").strip()
+    if not ref or ref.lower() in {"first", "default", "auto"}:
+        return records, records[0][0] if records else None
+    for i, (name, _seq) in enumerate(records):
+        if name == ref:
+            return [records[i]] + records[:i] + records[i + 1 :], name
+    lowered = ref.lower()
+    for i, (name, _seq) in enumerate(records):
+        if name.lower() == lowered:
+            return [records[i]] + records[:i] + records[i + 1 :], name
+    return records, records[0][0] if records else None
+
+
 def pairwise_identity_from_aligned(seq_a: str, seq_b: str) -> dict:
     compared = matches = mismatches = gap_columns = 0
     for a, b in zip(seq_a, seq_b):
@@ -1098,6 +1112,46 @@ def reference_difference_rows(aln: list[tuple[str, str]]) -> list[dict]:
                 "gap_columns": stats["gap_columns"],
             }
         )
+    return rows
+
+
+def interpretation_rows(stats: dict, ref_rows: list[dict], hap_rows: list[dict], group_rows: list[dict], reference_sample: str | None, alignment_method: str) -> list[dict]:
+    rows: list[dict] = []
+    samples = int(stats.get("samples", 0) or 0)
+    hap_count = len(hap_rows)
+    rows.append({"item": "参考序列", "conclusion": reference_sample or "第一条序列", "detail": "差异统计和坐标标签均以该序列为参考。"})
+    rows.append({"item": "样本与单倍型", "conclusion": f"{samples} 个样本分为 {hap_count} 个单倍型", "detail": "单倍型表示完整比对序列完全一致的样本集合。"})
+    rows.append(
+        {
+            "item": "变异概览",
+            "conclusion": f"{stats.get('variant_sites', 0)} 个变异位点；SNP {stats.get('snp_sites', 0)}；InDel {stats.get('indel_sites', 0)}",
+            "detail": f"保守位点比例 {stats.get('conserved_percent', 0)}%。",
+        }
+    )
+    non_ref = [r for r in ref_rows if r.get("sample") != r.get("reference")]
+    if non_ref:
+        most_diff = min(non_ref, key=lambda r: float(r.get("identity_percent", 0) or 0))
+        most_similar = max(non_ref, key=lambda r: float(r.get("identity_percent", 0) or 0))
+        rows.append(
+            {
+                "item": "差异最大的样本",
+                "conclusion": str(most_diff.get("sample", "")),
+                "detail": f"相对参考 identity {most_diff.get('identity_percent')}%，mismatch {most_diff.get('mismatches')}，gap columns {most_diff.get('gap_columns')}。",
+            }
+        )
+        rows.append(
+            {
+                "item": "最接近参考的样本",
+                "conclusion": str(most_similar.get("sample", "")),
+                "detail": f"相对参考 identity {most_similar.get('identity_percent')}%。",
+            }
+        )
+    if hap_rows:
+        largest = max(hap_rows, key=lambda r: int(r.get("sample_count", 0) or 0))
+        rows.append({"item": "最大单倍型", "conclusion": str(largest.get("haplotype", "")), "detail": f"包含 {largest.get('sample_count')} 个样本：{largest.get('samples')}"})
+    if group_rows:
+        rows.append({"item": "分组固定差异", "conclusion": f"发现 {len(group_rows)} 个写出的固定差异位点", "detail": "若结果被大文件策略截断，请查看 group_fixed_differences.csv。"})
+    rows.append({"item": "比对方法", "conclusion": alignment_method, "detail": "长序列会优先使用内置快速路径，避免公共网站崩溃。"})
     return rows
 
 
@@ -1587,6 +1641,7 @@ def direct_alignment_report(
     title: str = "直接多序列比对",
     group_a: str | None = None,
     group_b: str | None = None,
+    reference_sample: str | None = None,
     make_pdf: bool = True,
     max_render_cols: int = 3000,
     use_mafft: bool = False,
@@ -1599,7 +1654,7 @@ def direct_alignment_report(
     table_dir = stage / "variant_tables"
     stats_dir = stage / "analysis_tables"
     consensus_dir = stage / "consensus_fasta"
-    seqs = [(r.sample, r.seq) for r in records if r.seq]
+    seqs, resolved_reference = reorder_records_by_reference([(r.sample, r.seq) for r in records if r.seq], reference_sample)
     aln, alignment_method = direct_msa(seqs, use_mafft=use_mafft)
     fasta_path = fasta_dir / "direct_alignment.fasta"
     fasta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1674,6 +1729,18 @@ def direct_alignment_report(
     tree_path.write_text(tree_text + "\n", encoding="utf-8")
     heatmap_svg = identity_heatmap_svg(pairwise_square)
     tree_svg = upgma_tree_svg(tree_root)
+    interpretation = interpretation_rows(stats, ref_rows, hap_rows, group_rows, resolved_reference, alignment_method)
+    write_csv(stats_dir / "result_interpretation.csv", interpretation, ["item", "conclusion", "detail"])
+    interpretation_html_path = html_dir / "result_interpretation.html"
+    interpretation_body = (
+        "<h1>结果解释</h1>"
+        f"<p>参考序列：{html.escape(resolved_reference or '第一条序列')}；比对方法：{html.escape(alignment_method)}。</p>"
+        f"{html_table(interpretation, max_rows=80)}"
+        "<h2>建议</h2>"
+        "<p>若样本数多且序列很长，建议优先查看本页、聚类树、单倍型表和 pairwise identity 矩阵；完整 alignment FASTA 可用于后续专业软件复查。</p>"
+    )
+    interpretation_html_path.parent.mkdir(parents=True, exist_ok=True)
+    interpretation_html_path.write_text(html_doc("Result interpretation", interpretation_body), encoding="utf-8")
     tree_svg_path = figures_dir / "upgma_tree.svg"
     tree_svg_path.parent.mkdir(parents=True, exist_ok=True)
     tree_svg_path.write_text(tree_svg, encoding="utf-8")
@@ -1692,12 +1759,14 @@ def direct_alignment_report(
             "alignment": "direct_alignment",
             "aligned_samples": len(seqs),
             "alignment_method": alignment_method,
+            "reference_sample": resolved_reference or "",
             "haplotypes": len(hap_rows),
             "variant_sites": stats["variant_sites"],
             "snp_sites": stats["snp_sites"],
             "indel_sites": stats["indel_sites"],
             "conserved_percent": stats["conserved_percent"],
             "html": str(html_dir / "direct_alignment.html"),
+            "interpretation_html": str(interpretation_html_path),
             "cluster_tree_html": str(tree_html_path),
             "pdf": str(pdf_dir / "direct_alignment.pdf") if make_pdf else "",
             "alignment_fasta": str(fasta_path),
@@ -1706,6 +1775,7 @@ def direct_alignment_report(
             "variant_table": str(variant_path),
             "variant_site_matrix": str(stats_dir / "variant_site_matrix.csv"),
             "haplotype_table": str(stats_dir / "haplotypes.csv"),
+            "interpretation_table": str(stats_dir / "result_interpretation.csv"),
             "pairwise_identity_matrix": str(stats_dir / "pairwise_identity_matrix.csv"),
             "upgma_tree_newick": str(tree_path),
             "upgma_tree_svg": str(tree_svg_path),
@@ -1714,7 +1784,7 @@ def direct_alignment_report(
     ]
     body = (
         f"<h1>{html.escape(title)}</h1>"
-        f"<p>Samples: {len(seqs)} aligned. Alignment method: {html.escape(alignment_method)}. Reference coordinate labels use the first uploaded sequence.</p>"
+        f"<p>Samples: {len(seqs)} aligned. Alignment method: {html.escape(alignment_method)}. Reference coordinate labels use {html.escape(resolved_reference or 'the first uploaded sequence')}.</p>"
         f"<div class='metric-grid'>"
         f"<div><b>{stats['samples']}</b><span>样本数</span></div>"
         f"<div><b>{stats['alignment_length']}</b><span>比对长度</span></div>"
@@ -1724,6 +1794,7 @@ def direct_alignment_report(
         f"<div><b>{stats['indel_sites']}</b><span>InDel</span></div>"
         f"<div><b>{stats['conserved_percent']}%</b><span>保守位点</span></div>"
         f"</div>"
+        f"<h2>结果解释</h2>{html_table(interpretation, max_rows=80)}"
         f"<h2>输入体检</h2>{html_table(quality_rows)}"
         f"<h2>单倍型 / 去重复序列</h2>{html_table(hap_rows)}"
         f"<h2>只看变异位点矩阵</h2>{html_table(variant_matrix)}"
@@ -1747,12 +1818,14 @@ def direct_alignment_report(
             "alignment",
             "aligned_samples",
             "alignment_method",
+            "reference_sample",
             "haplotypes",
             "variant_sites",
             "snp_sites",
             "indel_sites",
             "conserved_percent",
             "html",
+            "interpretation_html",
             "cluster_tree_html",
             "pdf",
             "alignment_fasta",
@@ -1761,6 +1834,7 @@ def direct_alignment_report(
             "variant_table",
             "variant_site_matrix",
             "haplotype_table",
+            "interpretation_table",
             "pairwise_identity_matrix",
             "upgma_tree_newick",
             "upgma_tree_svg",
@@ -2285,6 +2359,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--color-gap", default=None)
         p.add_argument("--group-a", default=None, help="Optional group A sample names for direct alignment comparison")
         p.add_argument("--group-b", default=None, help="Optional group B sample names for direct alignment comparison")
+        p.add_argument("--reference-sample", default=None, help="Optional direct-alignment reference sample name; default uses first sequence")
         p.add_argument("--use-mafft", action="store_true", help="Optionally use MAFFT when it is installed; built-in fast aligner is used by default")
         p.add_argument("--skip-pdf", action="store_true", help="Generate HTML and data tables only; skip slow PDF printing")
         p.add_argument("--max-render-cols", type=int, default=3000, help="Direct alignment base-map render limit; longer alignments keep tables/FASTA but skip full colored base map")
@@ -2307,7 +2382,7 @@ def main(argv: list[str] | None = None) -> int:
         total_bp = sum(len(r.seq) for r in records)
         if total_bp > args.max_total_bp:
             raise SystemExit(f"Total sequence length {total_bp} bp exceeds the public-site safety limit {args.max_total_bp} bp. Please upload fewer/shorter sequences.")
-        direct_alignment_report(root, records, parse_colors(args), group_a=args.group_a, group_b=args.group_b, make_pdf=not args.skip_pdf, max_render_cols=args.max_render_cols, use_mafft=args.use_mafft)
+        direct_alignment_report(root, records, parse_colors(args), group_a=args.group_a, group_b=args.group_b, reference_sample=args.reference_sample, make_pdf=not args.skip_pdf, max_render_cols=args.max_render_cols, use_mafft=args.use_mafft)
         if args.zip_pdfs and not args.skip_pdf:
             zip_path = zip_pdfs(root)
             print(f"PDF zip: {zip_path}")

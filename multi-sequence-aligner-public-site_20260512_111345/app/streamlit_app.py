@@ -439,6 +439,7 @@ def build_command(
     align_samples: str,
     group_a: str,
     group_b: str,
+    reference_sample: str,
     colors: dict[str, str],
 ) -> list[str]:
     if analysis_mode == "direct":
@@ -496,6 +497,8 @@ def build_command(
             cmd += ["--group-a", group_a.strip()]
         if group_b.strip():
             cmd += ["--group-b", group_b.strip()]
+        if reference_sample.strip():
+            cmd += ["--reference-sample", reference_sample.strip()]
     if analysis_mode != "direct" and do_sanger:
         cmd += ["--sanger-dir", str(sanger_dir or "")]
         if number_map.strip():
@@ -689,6 +692,88 @@ def file_table(uploaded_files) -> list[dict[str, str]]:
     return [{"文件名": item.name, "样本": Path(item.name).stem, "大小": file_size_label(item.size)} for item in uploaded_files]
 
 
+def estimate_uploaded_fastas(uploaded_files) -> dict:
+    total_bytes = sum(item.size for item in uploaded_files)
+    records = 0
+    total_bp = 0
+    longest = 0
+    names: list[str] = []
+    sampled_large_file = False
+    for item in uploaded_files:
+        data = uploaded_bytes(item)
+        sample_size = min(len(data), 2_000_000)
+        sampled_large_file = sampled_large_file or len(data) > sample_size
+        text = data[:sample_size].decode("utf-8", errors="ignore")
+        current_len = 0
+        seen_header = False
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if seen_header:
+                    longest = max(longest, current_len)
+                    total_bp += current_len
+                    current_len = 0
+                records += 1
+                seen_header = True
+                if len(names) < 50:
+                    names.append(line[1:].strip().split()[0] or Path(item.name).stem)
+            elif seen_header:
+                current_len += len(re.sub(r"[^A-Za-z]", "", line))
+        if seen_header:
+            longest = max(longest, current_len)
+            total_bp += current_len
+        else:
+            records += 1
+            names.append(Path(item.name).stem)
+            approx_bp = len(re.sub(rb"[^A-Za-z]", b"", data))
+            total_bp += approx_bp
+            longest = max(longest, approx_bp)
+    if records == 0 and uploaded_files:
+        records = len(uploaded_files)
+    if total_bp == 0:
+        total_bp = total_bytes
+    if sampled_large_file and total_bytes > 0 and total_bp < int(total_bytes * 0.45):
+        total_bp = int(total_bytes * 0.9)
+        longest = max(longest, max(1, total_bp // max(records, 1)))
+    return {
+        "records": records,
+        "total_bp": total_bp,
+        "longest_bp": longest,
+        "total_bytes": total_bytes,
+        "sample_names": names,
+        "sampled_large_file": sampled_large_file,
+    }
+
+
+def render_task_estimate(estimate: dict, analysis_mode: str):
+    if not estimate.get("records"):
+        return
+    total_bp = int(estimate.get("total_bp", 0) or 0)
+    records = int(estimate.get("records", 0) or 0)
+    longest = int(estimate.get("longest_bp", 0) or 0)
+    if analysis_mode == "direct" and (records >= 8 or total_bp >= 800_000 or longest >= 100_000):
+        advice = "建议使用快速模式：不生成 PDF，并将完整碱基图最大绘制列数设为 0。"
+        level = "warn"
+    elif analysis_mode == "direct" and (records >= 4 or total_bp >= 200_000):
+        advice = "适合网页快速分析；如运行变慢，可跳过完整碱基图。"
+        level = "ok"
+    else:
+        advice = "任务规模较小，适合网页分析。"
+        level = "ok"
+    st.markdown(
+        f"""
+        <div class="asset-row">
+            <strong>上传前预估</strong>
+            <span class="muted">预计序列数 {records}；总长度约 {total_bp:,} bp；最长序列约 {longest:,} bp。</span>
+            <div class="{level}">{advice}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 cleanup_old_sessions()
 
 st.markdown(
@@ -777,6 +862,7 @@ sanger_uploads = sanger_uploads or []
 primer_preview_path = cache_primer_for_preview(primer_upload)
 primer_rows, primer_error = read_primer_preview(primer_preview_path)
 fasta_preview = file_table(fasta_uploads)
+fasta_estimate = estimate_uploaded_fastas(fasta_uploads) if fasta_uploads else {}
 sanger_preview = [{"文件名": item.name, "大小": file_size_label(item.size)} for item in sanger_uploads]
 total_size = sum(item.size for item in fasta_uploads + sanger_uploads) + (primer_upload.size if primer_upload else 0)
 
@@ -831,9 +917,22 @@ with mode_cols[1]:
     align_samples = st.text_input("参与比对的样本", "all")
     if analysis_mode == "direct":
         st.caption("直接比对支持一个多序列 FASTA，或多个 FASTA 文件；长序列默认使用内置锚点算法，不依赖 MAFFT。分组比较为可选。")
+        sample_names = fasta_estimate.get("sample_names") or []
+        if sample_names:
+            reference_choice = st.selectbox(
+                "参考样本（可选）",
+                ["默认使用第一条序列"] + sample_names,
+                help="差异统计、坐标标签和结果解释会以该样本为参考；不选择时使用上传文件中的第一条序列。",
+            )
+            reference_sample = "" if reference_choice == "默认使用第一条序列" else reference_choice
+            if len(sample_names) >= 50:
+                st.caption("参考样本列表只显示前 50 个识别到的样本；如果需要其他样本，可把它放到 FASTA 前面或改名后重新上传。")
+        else:
+            reference_sample = st.text_input("参考样本（可选）", "", placeholder="默认使用第一条序列")
         group_a = st.text_input("A 组样本（可选）", "", placeholder="例如 sample1,sample2")
         group_b = st.text_input("B 组样本（可选）", "", placeholder="例如 sample3,sample4")
     else:
+        reference_sample = ""
         group_a = ""
         group_b = ""
     if analysis_mode == "primer" and do_sanger:
@@ -951,6 +1050,8 @@ if tab_primer is not None:
 with tab_fasta:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("FASTA 文件")
+    if fasta_estimate:
+        render_task_estimate(fasta_estimate, analysis_mode)
     if fasta_preview:
         st.dataframe(fasta_preview, use_container_width=True, hide_index=True)
     else:
@@ -1047,6 +1148,7 @@ with tab_run:
             align_samples=align_samples,
             group_a=group_a,
             group_b=group_b,
+            reference_sample=reference_sample,
             colors=colors,
         )
 
