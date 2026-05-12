@@ -244,8 +244,41 @@ st.markdown(
         padding: .5rem .75rem;
     }
     .stButton > button,
-    .stDownloadButton > button {
+    .stDownloadButton > button,
+    div[data-testid="stFileUploader"] button,
+    button[kind="secondary"],
+    button[kind="primary"] {
         border-radius: 8px;
+        background: #ffffff !important;
+        color: var(--ink) !important;
+        border: 1px solid #cfd6e3 !important;
+        box-shadow: none !important;
+        font-weight: 700 !important;
+    }
+    .stButton > button:hover,
+    .stDownloadButton > button:hover,
+    div[data-testid="stFileUploader"] button:hover,
+    button[kind="secondary"]:hover,
+    button[kind="primary"]:hover {
+        background: #eef7f8 !important;
+        color: #0f5f6d !important;
+        border-color: #9fd1d8 !important;
+    }
+    .stButton > button:active,
+    .stDownloadButton > button:active,
+    div[data-testid="stFileUploader"] button:active,
+    button[kind="secondary"]:active,
+    button[kind="primary"]:active {
+        background: #e2f1f4 !important;
+        color: #0f5f6d !important;
+    }
+    button[disabled],
+    .stButton > button:disabled,
+    .stDownloadButton > button:disabled {
+        background: #f2f4f7 !important;
+        color: #98a2b3 !important;
+        border-color: #e4e7ec !important;
+        opacity: 1 !important;
     }
     label,
     [data-testid="stWidgetLabel"],
