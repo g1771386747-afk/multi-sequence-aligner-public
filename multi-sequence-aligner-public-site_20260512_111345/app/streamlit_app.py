@@ -431,6 +431,7 @@ def build_command(
     do_word: bool,
     zip_pdfs: bool,
     flank: int,
+    align_flank: int,
     max_product: int,
     align_samples: str,
     colors: dict[str, str],
@@ -456,6 +457,8 @@ def build_command(
         str(out_dir),
         "--flank",
         str(flank),
+        "--align-flank",
+        str(align_flank),
         "--max-product",
         str(max_product),
     ]
@@ -726,6 +729,9 @@ with mode_cols[1]:
     with p1:
         flank = st.number_input("两侧延伸 bp", min_value=0, max_value=5000, value=500, step=50)
     with p2:
+        align_flank = st.number_input("比对图两侧显示 bp", min_value=0, max_value=5000, value=500, step=50)
+    p3, _ = st.columns(2)
+    with p3:
         max_product = st.number_input("最大扩增长度 bp", min_value=100, max_value=50000, value=5000, step=100)
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -865,6 +871,7 @@ with tab_run:
             do_word=do_word,
             zip_pdfs=zip_pdfs,
             flank=int(flank),
+            align_flank=int(align_flank),
             max_product=int(max_product),
             align_samples=align_samples,
             colors=colors,

@@ -677,45 +677,108 @@ def variant_columns(aln: list[tuple[str, str]]) -> list[int]:
     return cols
 
 
+def display_window_sequence(hit: AmpliconHit, display_flank: int | None = None) -> str:
+    """Return the product plus flanks in the same F-to-R orientation as product_seq."""
+    seq = revcomp(hit.window_seq) if hit.strand == "-" else hit.window_seq
+    if display_flank is None:
+        return seq
+    available_flank = max(0, (len(seq) - hit.product_len) // 2)
+    keep_flank = max(0, min(display_flank, available_flank))
+    start = available_flank - keep_flank
+    end = available_flank + hit.product_len + keep_flank
+    return seq[start:end]
+
+
+def display_window_coord(hit: AmpliconHit, offset: int, genome_len: int, display_flank: int | None = None) -> int:
+    if display_flank is not None:
+        available_flank = max(0, (len(display_window_sequence(hit)) - hit.product_len) // 2)
+        # Recalculate using the full stored window so the display offset maps back
+        # to the original genome coordinate.
+        full_flank = max(0, (len(hit.window_seq) - hit.product_len) // 2)
+        start_shift = full_flank - available_flank
+        offset += start_shift
+    if hit.strand == "-":
+        return coord_add(hit.window_end, -offset, genome_len)
+    return coord_add(hit.window_start, offset, genome_len)
+
+
+def build_alignment_position_labels(aln: list[tuple[str, str]], ref_hit: AmpliconHit | None, genome_len: int, display_flank: int | None = None) -> dict[int, str]:
+    labels: dict[int, str] = {}
+    if not aln or not ref_hit or not genome_len:
+        return labels
+    offset = -1
+    last_coord = ref_hit.window_start
+    for col, base in enumerate(aln[0][1]):
+        if base != "-":
+            offset += 1
+            last_coord = display_window_coord(ref_hit, offset, genome_len, display_flank)
+            labels[col] = str(last_coord)
+        else:
+            labels[col] = f"gap_after_{last_coord}"
+    return labels
+
+
+def build_alignment_primer_marks(
+    aln: list[tuple[str, str]],
+    selected_hits: dict[str, AmpliconHit],
+    primer: PrimerPair,
+    display_flank: int | None = None,
+) -> dict[tuple[int, int], str]:
+    marks: dict[tuple[int, int], str] = {}
+    for row, (sample, seq) in enumerate(aln):
+        hit = selected_hits.get(sample)
+        if not hit:
+            continue
+        flank = max(0, (len(display_window_sequence(hit, display_flank)) - hit.product_len) // 2)
+        f_range = range(flank, flank + len(primer.f_seq))
+        r_start = flank + hit.product_len - len(primer.r_seq)
+        r_range = range(r_start, r_start + len(primer.r_seq))
+        offset = -1
+        for col, base in enumerate(seq):
+            if base == "-":
+                continue
+            offset += 1
+            if offset in f_range:
+                marks[(row, col)] = "F"
+            elif offset in r_range:
+                marks[(row, col)] = "R"
+    return marks
+
+
 def alignment_pdf_svg(
     aln: list[tuple[str, str]],
     title: str,
     colors: dict[str, str],
     position_labels: dict[int, str] | None = None,
-    window_flank: int = 8,
+    primer_marks: dict[tuple[int, int], str] | None = None,
+    chunk_size: int = 90,
 ) -> tuple[str, list[dict]]:
     var_cols = variant_columns(aln)
     if not aln:
         return "", []
     length = len(aln[0][1])
-    windows: list[tuple[int, int]] = []
-    for c in var_cols:
-        s = max(0, c - window_flank)
-        e = min(length, c + window_flank + 1)
-        if windows and s <= windows[-1][1] + 3:
-            windows[-1] = (windows[-1][0], max(windows[-1][1], e))
-        else:
-            windows.append((s, e))
-    if not windows:
-        windows = [(0, min(length, 80))]
+    windows = [(s, min(s + chunk_size, length)) for s in range(0, length, chunk_size)]
 
-    row_h = 20
-    cell = 16
-    left = 145
+    row_h = 19
+    cell = 12
+    left = 155
     top = 55
-    block_gap = 38
+    block_gap = 44
     max_wcols = max(e - s for s, e in windows)
-    width = max(780, left + max_wcols * cell + 60)
-    height = top + sum((len(aln) * row_h + 52) for _ in windows) + block_gap * len(windows) + 40
+    width = max(980, left + max_wcols * cell + 80)
+    height = top + sum((len(aln) * row_h + 66) for _ in windows) + block_gap * len(windows) + 42
     parts = [
         f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>",
         "<rect width='100%' height='100%' fill='white'/>",
         f"<text x='18' y='28' font-family='Arial, Microsoft YaHei' font-size='18' font-weight='700'>{html.escape(title)}</text>",
+        "<text x='18' y='46' font-family='Arial, Microsoft YaHei' font-size='11' fill='#475467'>Complete amplicon window is shown in chunks: left flank + F primer + PCR product + R primer + right flank. Green boxes = F primer; red boxes = R primer; red outlines = variant columns.</text>",
     ]
     y = top
     variant_rows: list[dict] = []
+    seen_variants: set[int] = set()
+    var_set = set(var_cols)
     for wi, (s, e) in enumerate(windows, 1):
-        parts.append(f"<text x='18' y='{y-12}' font-family='Arial' font-size='12'>Window {wi}: alignment columns {s+1}-{e}</text>")
+        parts.append(f"<text x='18' y='{y-12}' font-family='Arial' font-size='12'>Block {wi}: alignment columns {s+1}-{e}</text>")
         for r, (name, seq) in enumerate(aln):
             yy = y + r * row_h
             parts.append(f"<text x='12' y='{yy+14}' font-family='Arial' font-size='12'>{html.escape(name)}</text>")
@@ -725,7 +788,11 @@ def alignment_pdf_svg(
                 fill = colors.get(b, colors.get("-", "#d9d9d9"))
                 text_color = "#ffffff" if b == "G" and fill.lower() in {"#111111", "black"} else "#111111"
                 parts.append(f"<rect x='{x}' y='{yy}' width='{cell}' height='{row_h-2}' fill='{fill}' stroke='white'/>")
-                parts.append(f"<text x='{x+cell/2}' y='{yy+14}' text-anchor='middle' font-family='Arial' font-size='12' font-weight='700' fill='{text_color}'>{html.escape(b)}</text>")
+                mark = (primer_marks or {}).get((r, pos))
+                if mark:
+                    stroke = "#16a34a" if mark == "F" else "#dc2626"
+                    parts.append(f"<rect x='{x+1}' y='{yy+1}' width='{cell-2}' height='{row_h-4}' fill='none' stroke='{stroke}' stroke-width='2'/>")
+                parts.append(f"<text x='{x+cell/2}' y='{yy+13}' text-anchor='middle' font-family='Arial' font-size='10' font-weight='700' fill='{text_color}'>{html.escape(b)}</text>")
         for pos in var_cols:
             if s <= pos < e:
                 x = left + (pos - s) * cell
@@ -733,14 +800,34 @@ def alignment_pdf_svg(
                 states = "".join(sorted({seq[pos] for _, seq in aln}))
                 typ = "InDel" if "-" in states else "SNV"
                 label = (position_labels or {}).get(pos, str(pos + 1))
-                parts.append(f"<text x='{x+cell/2}' y='{y+len(aln)*row_h+16}' text-anchor='middle' font-family='Arial' font-size='10'>{html.escape(label)}</text>")
-                variant_rows.append({"alignment_col": pos + 1, "position_label": label, "type": typ, "states": states})
-        y += len(aln) * row_h + 52 + block_gap
+                if pos not in seen_variants:
+                    variant_rows.append({"alignment_col": pos + 1, "position_label": label, "type": typ, "states": states})
+                    seen_variants.add(pos)
+        label_y = y + len(aln) * row_h + 18
+        last_label_x = -999
+        for pos in range(s, e):
+            x = left + (pos - s) * cell + cell / 2
+            should_label = pos in {s, e - 1} or pos in var_set or (pos - s) % 20 == 0
+            if not should_label or x - last_label_x < 46:
+                continue
+            label = (position_labels or {}).get(pos, str(pos + 1))
+            parts.append(f"<line x1='{x}' y1='{y+len(aln)*row_h+3}' x2='{x}' y2='{y+len(aln)*row_h+8}' stroke='#667085'/>")
+            parts.append(f"<text x='{x}' y='{label_y}' text-anchor='end' transform='rotate(-45 {x} {label_y})' font-family='Arial' font-size='9' fill='#475467'>{html.escape(label)}</text>")
+            last_label_x = x
+        y += len(aln) * row_h + 66 + block_gap
     parts.append("</svg>")
     return "\n".join(parts), variant_rows
 
 
-def stage2_alignment_reports(root: Path, primers: list[PrimerPair], records: list[FastaRecord], hits: dict[tuple[str, str], list[AmpliconHit]], align_samples: str, colors: dict[str, str]):
+def stage2_alignment_reports(
+    root: Path,
+    primers: list[PrimerPair],
+    records: list[FastaRecord],
+    hits: dict[tuple[str, str], list[AmpliconHit]],
+    align_samples: str,
+    colors: dict[str, str],
+    align_flank: int | None = None,
+):
     stage = root / "02_multi_sequence_alignment"
     pdf_dir = stage / "pdf"
     html_dir = stage / "html"
@@ -762,7 +849,7 @@ def stage2_alignment_reports(root: Path, primers: list[PrimerPair], records: lis
                 continue
             candidates = [h for h in hits.get((rec.sample, primer.pair_name), []) if h.product_seq and h.status in {"FOUND", "WARN_MULTIPLE_HITS"}]
             if candidates:
-                seqs.append((rec.sample, candidates[0].product_seq))
+                seqs.append((rec.sample, display_window_sequence(candidates[0], align_flank)))
                 selected_hits[rec.sample] = candidates[0]
             else:
                 missing.append(rec.sample)
@@ -777,22 +864,17 @@ def stage2_alignment_reports(root: Path, primers: list[PrimerPair], records: lis
             ref_sample = aln[0][0]
             ref_hit = selected_hits.get(ref_sample)
             ref_len = genome_len.get(ref_sample, 0)
-            ref_pos = 0
-            last_coord = ref_hit.product_start if ref_hit else 0
-            for col, base in enumerate(aln[0][1]):
-                if ref_hit and ref_len and base != "-":
-                    ref_pos += 1
-                    last_coord = coord_add(ref_hit.product_start, ref_pos - 1, ref_len)
-                    position_labels[col] = str(last_coord)
-                elif ref_hit and ref_len:
-                    position_labels[col] = f"gap_after_{last_coord}"
-        svg, variant_rows = alignment_pdf_svg(aln, f"{primer.order}. {primer.pair_name} 多序列比对", colors, position_labels)
+            position_labels = build_alignment_position_labels(aln, ref_hit, ref_len, align_flank)
+        primer_marks = build_alignment_primer_marks(aln, selected_hits, primer, align_flank)
+        svg, variant_rows = alignment_pdf_svg(aln, f"{primer.order}. {primer.pair_name} 多序列比对", colors, position_labels, primer_marks)
         variant_path = table_dir / f"{safe_name(primer.pair_name)}.variant_sites.csv"
         write_csv(variant_path, variant_rows, ["alignment_col", "position_label", "type", "states"])
         miss_html = "".join(f"<li>{html.escape(m)}: not found</li>" for m in missing)
         body = (
             f"<h1>{html.escape(primer.pair_name)} 多序列比对</h1>"
             f"<p>Samples: {len(seqs)} aligned; missing: {len(missing)}</p>"
+            f"<p>Displayed region: theoretical amplicon plus {align_flank if align_flank is not None else 'all available'} bp flanking sequence on both sides. "
+            f"F primer is boxed in green; R primer is boxed in red.</p>"
             f"<div>{svg}</div>"
             f"<h2>Missing samples</h2><ul>{miss_html}</ul>"
         )
@@ -1321,6 +1403,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--out-dir", help="Run output directory; default creates desktop timestamp folder")
         p.add_argument("--flank", type=int, default=500)
         p.add_argument("--max-product", type=int, default=5000)
+        p.add_argument("--align-flank", type=int, default=None, help="Flanking bp to show on each side in multi-sequence alignment; default uses --flank")
         p.add_argument("--align-samples", default="all", help="all, or comma-separated sample names")
         p.add_argument("--color-a", default=None)
         p.add_argument("--color-t", default=None)
@@ -1354,7 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
     input_index(root, primers, records)
     hits = stage1_sample_reports(root, primers, records, args.flank, args.max_product)
     if args.cmd in {"align", "full"}:
-        stage2_alignment_reports(root, primers, records, hits, args.align_samples, parse_colors(args))
+        stage2_alignment_reports(root, primers, records, hits, args.align_samples, parse_colors(args), args.align_flank if args.align_flank is not None else args.flank)
     if args.cmd in {"sanger-compare", "full"} and args.sanger_dir:
         sanger_summary, sanger_missing = stage3_sanger_compare(root, primers, records, hits, Path(args.sanger_dir), parse_number_map(args.number_map))
         if args.word_report:
