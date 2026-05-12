@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -31,24 +32,174 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.3rem; padding-bottom: 2.5rem; max-width: 1440px;}
-    [data-testid="stSidebar"] {border-right: 1px solid #e6e9ef;}
-    h1 {font-size: 2rem; margin-bottom: .25rem; letter-spacing: 0;}
-    h2, h3 {letter-spacing: 0;}
-    h2 {font-size: 1.2rem;}
+    :root {
+        --ink: #182230;
+        --muted: #667085;
+        --line: #e6e9ef;
+        --panel: #f8fafc;
+        --panel-strong: #eef4ff;
+        --accent: #1f7a8c;
+        --accent-2: #7a9a01;
+        --good: #087443;
+        --warn: #9a5b00;
+        --bad: #b42318;
+    }
+    .block-container {
+        padding-top: 1.1rem;
+        padding-bottom: 2.8rem;
+        max-width: 1480px;
+    }
+    [data-testid="stSidebar"] {
+        background: #fbfcfe;
+        border-right: 1px solid var(--line);
+    }
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        letter-spacing: 0;
+    }
+    h1, h2, h3 {
+        color: var(--ink);
+        letter-spacing: 0;
+    }
+    h1 {font-size: 2rem; margin-bottom: .25rem;}
+    h2 {font-size: 1.18rem; margin-top: 1.1rem;}
     h3 {font-size: 1rem;}
+    .hero {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 1.25rem 1.35rem;
+        background: linear-gradient(135deg, #f7fbfc 0%, #f8fafc 48%, #f4f8ee 100%);
+        margin-bottom: 1rem;
+    }
+    .hero-title {
+        font-size: 2.05rem;
+        line-height: 1.15;
+        font-weight: 760;
+        color: var(--ink);
+        margin: 0 0 .45rem 0;
+    }
+    .hero-copy {
+        max-width: 880px;
+        color: #475467;
+        font-size: 1rem;
+        line-height: 1.62;
+        margin: 0;
+    }
+    .step-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: .75rem;
+        margin-top: 1rem;
+    }
+    .step-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255,255,255,.76);
+        padding: .8rem .9rem;
+    }
+    .step-label {
+        color: var(--accent);
+        font-weight: 760;
+        font-size: .83rem;
+        margin-bottom: .25rem;
+    }
+    .step-card strong {
+        display: block;
+        color: var(--ink);
+        font-size: .97rem;
+        margin-bottom: .12rem;
+    }
+    .step-card span {
+        color: var(--muted);
+        font-size: .88rem;
+        line-height: 1.45;
+    }
+    .section-kicker {
+        font-size: .78rem;
+        font-weight: 760;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        margin: .15rem 0 .45rem;
+    }
+    .status-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        padding: .85rem .92rem;
+        min-height: 98px;
+    }
+    .status-card .label {
+        color: var(--muted);
+        font-size: .85rem;
+        margin-bottom: .36rem;
+    }
+    .status-card .value {
+        color: var(--ink);
+        font-weight: 760;
+        font-size: 1.28rem;
+        margin-bottom: .18rem;
+    }
+    .status-card .note {
+        color: var(--muted);
+        font-size: .84rem;
+        line-height: 1.35;
+    }
+    .status-ok {color: var(--good); font-weight: 700;}
+    .status-warn {color: var(--warn); font-weight: 700;}
+    .status-bad {color: var(--bad); font-weight: 700;}
+    .muted {color: var(--muted); font-size: .92rem; line-height: 1.55;}
+    .download-panel {
+        border: 1px solid #b9dfc8;
+        background: #f2fbf5;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: .6rem 0 .85rem;
+    }
+    .download-panel strong {
+        color: var(--good);
+        display: block;
+        margin-bottom: .25rem;
+    }
+    .preview-panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        padding: .8rem .9rem;
+        margin: .7rem 0 1rem;
+    }
+    .asset-list {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+        padding: .7rem .8rem;
+        margin: .5rem 0;
+    }
+    .asset-list strong {
+        display: block;
+        color: var(--ink);
+        margin-bottom: .25rem;
+    }
     div[data-testid="stMetric"] {
-        background: #f8fafc;
-        border: 1px solid #e6e9ef;
+        background: #fff;
+        border: 1px solid var(--line);
         border-radius: 8px;
         padding: .78rem .88rem;
     }
-    div[data-testid="stMetric"] label {font-size: .85rem; color: #526071;}
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size: 1.35rem;}
-    .status-ok {color: #087443; font-weight: 600;}
-    .status-warn {color: #9a5b00; font-weight: 600;}
-    .status-bad {color: #b42318; font-weight: 600;}
-    .muted {color: #5f6b7a; font-size: .92rem;}
+    div[data-testid="stMetric"] label {font-size: .85rem; color: var(--muted);}
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {font-size: 1.34rem; color: var(--ink);}
+    .stTabs [data-baseweb="tab-list"] {
+        gap: .25rem;
+        border-bottom: 1px solid var(--line);
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: .55rem .8rem;
+    }
+    @media (max-width: 900px) {
+        .step-grid {grid-template-columns: 1fr;}
+        .hero-title {font-size: 1.55rem;}
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -234,6 +385,101 @@ def make_result_zip(result_dir: Path) -> Path:
     return Path(shutil.make_archive(str(zip_base), "zip", result_dir))
 
 
+def result_assets(result_dir: Path) -> tuple[list[Path], list[Path]]:
+    if not result_dir.exists():
+        return [], []
+    html_files = sorted(
+        result_dir.glob("**/*.html"),
+        key=lambda p: (preview_rank(p), str(p.relative_to(result_dir)).lower()),
+    )
+    pdf_files = sorted(
+        result_dir.glob("**/*.pdf"),
+        key=lambda p: (preview_rank(p), str(p.relative_to(result_dir)).lower()),
+    )
+    return html_files, pdf_files
+
+
+def preview_rank(path: Path) -> int:
+    text = str(path).lower()
+    if "02_multi_sequence_alignment" in text or ".alignment" in text:
+        return 0
+    if "03_sanger_vs_theory" in text or "sanger_vs_theory" in text:
+        return 1
+    if "01_sample_amplicon_reports" in text or "amplicons" in text:
+        return 2
+    return 9
+
+
+def asset_label(path: Path, root: Path) -> str:
+    rel = path.relative_to(root)
+    label = str(rel).replace("\\", " / ")
+    label = label.replace("01_sample_amplicon_reports / html /", "理论扩增 / ")
+    label = label.replace("01_sample_amplicon_reports / pdf /", "理论扩增 PDF / ")
+    label = label.replace("02_multi_sequence_alignment / html /", "多序列比对 / ")
+    label = label.replace("02_multi_sequence_alignment / pdf /", "多序列比对 PDF / ")
+    label = label.replace("03_sanger_vs_theory / html /", "测序比对 / ")
+    label = label.replace("03_sanger_vs_theory / pdf /", "测序比对 PDF / ")
+    return label
+
+
+def matching_pdf_for_html(html_path: Path, pdf_files: list[Path]) -> Path | None:
+    for pdf in pdf_files:
+        if pdf.stem == html_path.stem:
+            return pdf
+    return None
+
+
+def show_result_preview(result_dir: Path):
+    html_files, pdf_files = result_assets(result_dir)
+    if not html_files and not pdf_files:
+        st.warning("没有找到可预览或可下载的结果文件。")
+        return
+
+    st.markdown('<div class="section-kicker">Preview</div>', unsafe_allow_html=True)
+    st.subheader("结果预览")
+    if html_files:
+        selected_html = st.selectbox(
+            "选择要查看的结果",
+            html_files,
+            format_func=lambda p: asset_label(p, result_dir),
+        )
+        st.markdown(
+            f"<div class='preview-panel'><strong>{asset_label(selected_html, result_dir)}</strong><div class='muted'>下方为网页预览，适合快速查看比对结果；正式引用或保存建议下载 PDF。</div></div>",
+            unsafe_allow_html=True,
+        )
+        components.html(selected_html.read_text(encoding="utf-8", errors="replace"), height=760, scrolling=True)
+        matched_pdf = matching_pdf_for_html(selected_html, pdf_files)
+        if matched_pdf and matched_pdf.exists():
+            st.download_button(
+                "下载当前预览的 PDF",
+                data=matched_pdf.read_bytes(),
+                file_name=matched_pdf.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"download-current-{hashlib.sha1(str(matched_pdf).encode()).hexdigest()}",
+            )
+    else:
+        st.info("本次结果没有生成 HTML 预览，但可以下载 PDF。")
+
+    if pdf_files:
+        st.markdown('<div class="section-kicker">PDF files</div>', unsafe_allow_html=True)
+        st.subheader("单独下载 PDF")
+        for index, pdf in enumerate(pdf_files):
+            cols = st.columns([3, 1])
+            cols[0].markdown(
+                f"<div class='asset-list'><strong>{asset_label(pdf, result_dir)}</strong><span class='muted'>{file_size_label(pdf.stat().st_size)}</span></div>",
+                unsafe_allow_html=True,
+            )
+            cols[1].download_button(
+                "下载 PDF",
+                data=pdf.read_bytes(),
+                file_name=pdf.name,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"download-pdf-{index}-{hashlib.sha1(str(pdf).encode()).hexdigest()}",
+            )
+
+
 def clear_session_files():
     root = session_root()
     if root.exists():
@@ -253,12 +499,61 @@ def cleanup_old_sessions(max_age_hours: int = 24):
             continue
 
 
+def status_card(label: str, value: str, note: str):
+    st.markdown(
+        f"""
+        <div class="status-card">
+            <div class="label">{label}</div>
+            <div class="value">{value}</div>
+            <div class="note">{note}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def status_text(ok: bool, optional: bool = False) -> tuple[str, str]:
+    if ok:
+        return "正常", "status-ok"
+    if optional:
+        return "可选", "status-warn"
+    return "缺失", "status-bad"
+
+
 cleanup_old_sessions()
-st.title("多序列比对分析平台")
-st.caption("上传引物表和样本 FASTA，在线生成理论扩增片段、多序列比对结果和可下载报告。")
+
+st.markdown(
+    """
+    <div class="hero">
+        <div class="hero-title">多序列比对分析平台</div>
+        <p class="hero-copy">
+            上传引物表与样本 FASTA，在线生成理论扩增片段、多样本序列比对、变异位点表和可下载结果包。
+        </p>
+        <div class="step-grid">
+            <div class="step-card">
+                <div class="step-label">STEP 01</div>
+                <strong>上传数据</strong>
+                <span>提供引物表 Excel 和一个或多个样本 FASTA。</span>
+            </div>
+            <div class="step-card">
+                <div class="step-label">STEP 02</div>
+                <strong>选择分析</strong>
+                <span>生成理论扩增片段、多序列比对和可选测序验证。</span>
+            </div>
+            <div class="step-card">
+                <div class="step-label">STEP 03</div>
+                <strong>下载结果</strong>
+                <span>分析完成后下载包含 PDF、表格和报告的压缩包。</span>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
-    st.header("上传数据")
+    st.markdown('<div class="section-kicker">Data</div>', unsafe_allow_html=True)
+    st.subheader("上传数据")
     primer_upload = st.file_uploader("引物表 Excel", type=["xlsx"])
     fasta_uploads = st.file_uploader(
         "样本 FASTA 文件",
@@ -266,7 +561,8 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
-    st.header("分析内容")
+    st.markdown('<div class="section-kicker">Modules</div>', unsafe_allow_html=True)
+    st.subheader("分析内容")
     do_stage1 = st.checkbox("理论扩增片段 PDF", value=True)
     do_align = st.checkbox("多样本序列比对 PDF", value=True)
     do_sanger = st.checkbox("胶回收测序 vs 理论序列 PDF", value=False)
@@ -280,13 +576,15 @@ with st.sidebar:
         disabled=not do_sanger,
     )
 
-    st.header("参数")
+    st.markdown('<div class="section-kicker">Settings</div>', unsafe_allow_html=True)
+    st.subheader("参数设置")
     align_samples = st.text_input("参与比对的样本", "all", help="填写 all，或用英文逗号分隔 FASTA 文件名对应的样本名。")
     number_map = st.text_input("测序编号对应样本编号", DEFAULT_NUMBER_MAP, disabled=not do_sanger)
     flank = st.number_input("两侧延伸长度 bp", min_value=0, max_value=5000, value=500, step=50)
     max_product = st.number_input("最大理论扩增长度 bp", min_value=100, max_value=50000, value=5000, step=100)
 
-    st.header("碱基颜色")
+    st.markdown('<div class="section-kicker">Colors</div>', unsafe_allow_html=True)
+    st.subheader("碱基颜色")
     color_left, color_right = st.columns(2)
     with color_left:
         color_a = st.color_picker("A", "#1aa260")
@@ -319,11 +617,20 @@ sanger_preview = [
     for item in sanger_uploads
 ]
 
-metric_cols = st.columns(4)
-metric_cols[0].metric("引物对", len(primer_rows) if not primer_error else 0)
-metric_cols[1].metric("FASTA 文件", len(fasta_preview))
-metric_cols[2].metric("测序文件", len(sanger_preview))
-metric_cols[3].metric("运行模式", "完整分析" if do_sanger and do_align else "测序比对" if do_sanger else "多序列比对" if do_align else "理论扩增")
+mode_label = "完整分析" if do_sanger and do_align else "测序比对" if do_sanger else "多序列比对" if do_align else "理论扩增"
+total_upload_mb = sum(item.size for item in fasta_uploads + sanger_uploads)
+if primer_upload is not None:
+    total_upload_mb += primer_upload.size
+
+top_cols = st.columns(4)
+with top_cols[0]:
+    status_card("引物表", "已上传" if primer_upload else "等待上传", "Excel 模板将用于读取引物对。")
+with top_cols[1]:
+    status_card("样本 FASTA", str(len(fasta_preview)), "每个文件作为一个样本参与分析。")
+with top_cols[2]:
+    status_card("测序文件", str(len(sanger_preview)), "仅在测序比对模块中使用。")
+with top_cols[3]:
+    status_card("数据体量", file_size_label(total_upload_mb), f"当前运行模式：{mode_label}")
 
 check_tab, primer_tab, fasta_tab, sanger_tab, result_tab = st.tabs(
     ["输入检查", "引物预览", "FASTA 预览", "测序文件", "运行与下载"]
@@ -338,12 +645,11 @@ with check_tab:
     ]
     for name, ok, note in checks:
         optional = name == "测序文件" and not do_sanger
-        status = "正常" if ok else ("可选缺失" if optional else "缺失")
-        css = "status-ok" if ok else ("status-warn" if optional else "status-bad")
-        st.markdown(f"**{name}**：<span class='{css}'>{status}</span>", unsafe_allow_html=True)
+        label, css = status_text(ok, optional)
+        st.markdown(f"**{name}**：<span class='{css}'>{label}</span>", unsafe_allow_html=True)
         st.caption(note)
     st.markdown(
-        "<div class='muted'>每次运行的数据会保存在服务器临时目录中，结果通过压缩包下载。</div>",
+        "<div class='muted'>每次运行的数据会保存在服务器临时目录中，结果通过压缩包下载；超过 24 小时的临时数据会自动清理。</div>",
         unsafe_allow_html=True,
     )
 
@@ -371,10 +677,14 @@ with sanger_tab:
         st.info("未上传测序文件；未勾选测序比对时可以忽略。")
 
 with result_tab:
-    st.subheader("运行与下载")
+    st.subheader("运行、预览与下载")
     if st.session_state.get("last_zip"):
         zip_path = Path(st.session_state.last_zip)
         if zip_path.exists():
+            st.markdown(
+                "<div class='download-panel'><strong>上一次分析结果已就绪</strong><span class='muted'>可以继续下载，也可以重新上传文件开始新的分析。</span></div>",
+                unsafe_allow_html=True,
+            )
             st.download_button(
                 "下载上一次完整结果压缩包",
                 data=zip_path.read_bytes(),
@@ -382,6 +692,9 @@ with result_tab:
                 mime="application/zip",
                 use_container_width=True,
             )
+            last_result_dir = Path(st.session_state.get("last_result_dir", ""))
+            if last_result_dir.exists():
+                show_result_preview(last_result_dir)
 
     if not run:
         st.info("确认输入无误后，点击左侧“开始分析”。")
@@ -420,18 +733,24 @@ with result_tab:
             colors=colors,
         )
 
-        progress = st.progress(10, text="正在准备分析...")
+        progress = st.progress(8, text="正在准备分析...")
         with st.spinner("正在分析，请等待。大型数据可能需要几分钟。"):
             progress.progress(35, text="正在运行分析程序...")
             code, output = run_command(command)
             progress.progress(100, text="分析结束")
 
-        st.text_area("运行日志", output, height=260)
+        with st.expander("查看运行日志", expanded=code != 0):
+            st.text_area("运行日志", output, height=260)
         if code == 0:
             zip_path = make_result_zip(result_dir)
             st.session_state.last_result_dir = str(result_dir)
             st.session_state.last_zip = str(zip_path)
             st.success("分析完成")
+            show_result_preview(result_dir)
+            st.markdown(
+                "<div class='download-panel'><strong>结果已生成</strong><span class='muted'>压缩包包含 PDF、CSV 表格、序列比对文件和可选 Word 报告。</span></div>",
+                unsafe_allow_html=True,
+            )
             st.download_button(
                 "下载完整结果压缩包",
                 data=zip_path.read_bytes(),
