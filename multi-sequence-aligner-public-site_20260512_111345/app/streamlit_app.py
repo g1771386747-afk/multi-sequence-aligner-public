@@ -420,6 +420,7 @@ def read_primer_preview(path: Path | None) -> tuple[list[dict[str, str]], str | 
 
 def build_command(
     *,
+    analysis_mode: str,
     primer_table: Path,
     fasta_paths: list[Path],
     sanger_dir: Path | None,
@@ -436,7 +437,9 @@ def build_command(
     align_samples: str,
     colors: dict[str, str],
 ) -> list[str]:
-    if do_sanger and do_align:
+    if analysis_mode == "direct":
+        mode = "direct-align"
+    elif do_sanger and do_align:
         mode = "full"
     elif do_sanger:
         mode = "sanger-compare"
@@ -451,8 +454,6 @@ def build_command(
         sys.executable,
         str(SCRIPT),
         mode,
-        "--primer-table",
-        str(primer_table),
         "--out-dir",
         str(out_dir),
         "--flank",
@@ -462,10 +463,12 @@ def build_command(
         "--max-product",
         str(max_product),
     ]
+    if analysis_mode != "direct":
+        cmd += ["--primer-table", str(primer_table)]
     for fasta in fasta_paths:
         cmd += ["--fasta", str(fasta)]
 
-    if do_align or mode == "full":
+    if analysis_mode == "direct" or do_align or mode == "full":
         cmd += [
             "--align-samples",
             align_samples.strip() or "all",
@@ -480,7 +483,7 @@ def build_command(
             "--color-gap",
             colors["gap"],
         ]
-    if do_sanger:
+    if analysis_mode != "direct" and do_sanger:
         cmd += ["--sanger-dir", str(sanger_dir or "")]
         if number_map.strip():
             cmd += ["--number-map", number_map]
@@ -513,6 +516,8 @@ def make_result_zip(result_dir: Path) -> Path:
 
 def preview_rank(path: Path) -> int:
     text = str(path).lower()
+    if "02_direct_sequence_alignment" in text or "direct_alignment" in text:
+        return 0
     if "02_multi_sequence_alignment" in text or ".alignment" in text:
         return 0
     if "03_sanger_vs_theory" in text or "sanger_vs_theory" in text:
@@ -534,6 +539,8 @@ def asset_label(path: Path, root: Path) -> str:
     label = str(path.relative_to(root)).replace("\\", " / ")
     label = label.replace("01_sample_amplicon_reports / html /", "理论扩增 / ")
     label = label.replace("01_sample_amplicon_reports / pdf /", "理论扩增 PDF / ")
+    label = label.replace("02_direct_sequence_alignment / html /", "直接多序列比对 / ")
+    label = label.replace("02_direct_sequence_alignment / pdf /", "直接多序列比对 PDF / ")
     label = label.replace("02_multi_sequence_alignment / html /", "多序列比对 / ")
     label = label.replace("02_multi_sequence_alignment / pdf /", "多序列比对 PDF / ")
     label = label.replace("03_sanger_vs_theory / html /", "测序比对 / ")
@@ -641,8 +648,30 @@ with st.container():
         """
         <div class="section-head">
             <div>
-                <div class="section-title">1. 上传数据</div>
-                <div class="section-subtitle">引物表为 Excel；FASTA 可一次上传多个样本。测序文件仅在启用测序比对时需要。</div>
+                <div class="section-title">1. 选择分析模式</div>
+                <div class="section-subtitle">直接比对适合任意同源序列；引物模式用于定位理论扩增片段并进一步比对。</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    mode_choice = st.radio(
+        "分析模式",
+        ["直接多序列比对", "引物扩增片段分析"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    analysis_mode = "direct" if mode_choice == "直接多序列比对" else "primer"
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with st.container():
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="section-head">
+            <div>
+                <div class="section-title">2. 上传数据</div>
+                <div class="section-subtitle">直接比对只需要 FASTA；引物模式需要额外上传引物表 Excel。</div>
             </div>
             <div class="status-pill">支持 xlsx / fa / fasta / seq / txt</div>
         </div>
@@ -651,7 +680,11 @@ with st.container():
     )
     up1, up2, up3 = st.columns([1, 1.35, 1])
     with up1:
-        primer_upload = st.file_uploader("引物表 Excel", type=["xlsx"])
+        if analysis_mode == "primer":
+            primer_upload = st.file_uploader("引物表 Excel", type=["xlsx"])
+        else:
+            primer_upload = None
+            st.info("直接多序列比对不需要引物表。")
     with up2:
         fasta_uploads = st.file_uploader(
             "样本 FASTA 文件",
@@ -659,11 +692,15 @@ with st.container():
             accept_multiple_files=True,
         )
     with up3:
-        sanger_uploads = st.file_uploader(
-            "胶回收测序序列文件",
-            type=["fa", "fas", "fasta", "seq", "txt"],
-            accept_multiple_files=True,
-        )
+        if analysis_mode == "primer":
+            sanger_uploads = st.file_uploader(
+                "胶回收测序序列文件",
+                type=["fa", "fas", "fasta", "seq", "txt"],
+                accept_multiple_files=True,
+            )
+        else:
+            sanger_uploads = []
+            st.info("测序验证仅用于引物扩增片段分析。")
     st.markdown("</div>", unsafe_allow_html=True)
 
 fasta_uploads = fasta_uploads or []
@@ -678,12 +715,17 @@ total_size = sum(item.size for item in fasta_uploads + sanger_uploads) + (primer
 mode_cols = st.columns([1.3, 1])
 with mode_cols[0]:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    module_subtitle = (
+        "直接多序列比对只需要上传 FASTA；引物扩增片段分析可生成理论扩增片段、比对图和测序验证。"
+        if analysis_mode == "direct"
+        else "默认生成理论扩增片段和多样本序列比对；测序验证可按需开启。"
+    )
     st.markdown(
-        """
+        f"""
         <div class="section-head">
             <div>
                 <div class="section-title">2. 分析模块</div>
-                <div class="section-subtitle">默认生成理论扩增片段和多样本序列比对；测序验证可按需开启。</div>
+                <div class="section-subtitle">{module_subtitle}</div>
             </div>
         </div>
         """,
@@ -691,11 +733,11 @@ with mode_cols[0]:
     )
     m1, m2, m3 = st.columns(3)
     with m1:
-        do_stage1 = st.checkbox("理论扩增片段 PDF", value=True)
+        do_stage1 = st.checkbox("理论扩增片段 PDF", value=analysis_mode == "primer", disabled=analysis_mode == "direct")
     with m2:
-        do_align = st.checkbox("多样本序列比对 PDF", value=True)
+        do_align = st.checkbox("多样本序列比对 PDF", value=True, disabled=analysis_mode == "direct")
     with m3:
-        do_sanger = st.checkbox("胶回收测序验证", value=False)
+        do_sanger = st.checkbox("胶回收测序验证", value=False, disabled=analysis_mode == "direct")
     m4, m5 = st.columns(2)
     with m4:
         do_word = st.checkbox("生成 Word 汇总报告", value=False, disabled=not do_sanger)
@@ -717,7 +759,7 @@ with mode_cols[1]:
         unsafe_allow_html=True,
     )
     align_samples = st.text_input("参与比对的样本", "all")
-    if do_sanger:
+    if analysis_mode == "primer" and do_sanger:
         number_map = st.text_input(
             "测序编号对应样本编号（可选）",
             DEFAULT_NUMBER_MAP,
@@ -761,29 +803,44 @@ with st.container():
         color_gap = st.color_picker("gap", "#d9d9d9")
 st.markdown("</div>", unsafe_allow_html=True)
 
-mode_label = "完整分析" if do_sanger and do_align else "测序验证" if do_sanger else "多序列比对" if do_align else "理论扩增"
+if analysis_mode == "direct":
+    mode_label = "直接多序列比对"
+else:
+    mode_label = "完整分析" if do_sanger and do_align else "测序验证" if do_sanger else "多序列比对" if do_align else "理论扩增"
 st.markdown(
     f"""
     <div class="summary-grid">
-        <div class="summary-card"><div class="label">引物表</div><div class="value">{'已上传' if primer_upload else '缺失'}</div><div class="note">解析到 {0 if primer_error else len(primer_rows)} 对引物</div></div>
+        <div class="summary-card"><div class="label">引物表</div><div class="value">{'不需要' if analysis_mode == 'direct' else '已上传' if primer_upload else '缺失'}</div><div class="note">{'直接比对模式无需引物表' if analysis_mode == 'direct' else f'解析到 {0 if primer_error else len(primer_rows)} 对引物'}</div></div>
         <div class="summary-card"><div class="label">样本 FASTA</div><div class="value">{len(fasta_preview)}</div><div class="note">每个 FASTA 作为一个样本</div></div>
-        <div class="summary-card"><div class="label">测序文件</div><div class="value">{len(sanger_preview)}</div><div class="note">测序验证模块使用</div></div>
+        <div class="summary-card"><div class="label">测序文件</div><div class="value">{len(sanger_preview)}</div><div class="note">{'仅引物模式使用' if analysis_mode == 'direct' else '测序验证模块使用'}</div></div>
         <div class="summary-card"><div class="label">数据体量</div><div class="value">{file_size_label(total_size)}</div><div class="note">当前模式：{mode_label}</div></div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-tab_check, tab_primer, tab_fasta, tab_sanger, tab_run = st.tabs(["检查", "引物表", "FASTA", "测序文件", "运行与结果"])
+tab_names = ["检查", "FASTA", "运行与结果"] if analysis_mode == "direct" else ["检查", "引物表", "FASTA", "测序文件", "运行与结果"]
+tabs = st.tabs(tab_names)
+if analysis_mode == "direct":
+    tab_check, tab_fasta, tab_run = tabs
+    tab_primer = None
+    tab_sanger = None
+else:
+    tab_check, tab_primer, tab_fasta, tab_sanger, tab_run = tabs
 
 with tab_check:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("输入检查")
-    checks = [
-        ("引物表", primer_upload is not None, "必须上传 Excel 引物表。"),
-        ("FASTA 文件", bool(fasta_uploads), "至少上传一个样本 FASTA。"),
-        ("测序文件", bool(sanger_uploads), "启用测序验证时需要上传。"),
-    ]
+    if analysis_mode == "direct":
+        checks = [
+            ("样本 FASTA", bool(fasta_uploads), "至少上传两个同源序列 FASTA 更适合进行多序列比对。"),
+        ]
+    else:
+        checks = [
+            ("引物表", primer_upload is not None, "必须上传 Excel 引物表。"),
+            ("FASTA 文件", bool(fasta_uploads), "至少上传一个样本 FASTA。"),
+            ("测序文件", bool(sanger_uploads), "启用测序验证时需要上传。"),
+        ]
     for name, ok, note in checks:
         optional = name == "测序文件" and not do_sanger
         css = "ok" if ok else ("warn" if optional else "bad")
@@ -793,14 +850,15 @@ with tab_check:
     st.markdown("<div class='muted'>服务器临时数据会自动清理。建议用户在分析结束后及时下载结果包。</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-with tab_primer:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("引物表预览")
-    if primer_error:
-        st.info(primer_error)
-    else:
-        st.dataframe(primer_rows, use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+if tab_primer is not None:
+    with tab_primer:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("引物表预览")
+        if primer_error:
+            st.info(primer_error)
+        else:
+            st.dataframe(primer_rows, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 with tab_fasta:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -811,14 +869,15 @@ with tab_fasta:
         st.info("请上传样本 FASTA 文件。")
     st.markdown("</div>", unsafe_allow_html=True)
 
-with tab_sanger:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("测序文件")
-    if sanger_preview:
-        st.dataframe(sanger_preview, use_container_width=True, hide_index=True)
-    else:
-        st.info("未上传测序文件；未启用测序验证时可以忽略。")
-    st.markdown("</div>", unsafe_allow_html=True)
+if tab_sanger is not None:
+    with tab_sanger:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("测序文件")
+        if sanger_preview:
+            st.dataframe(sanger_preview, use_container_width=True, hide_index=True)
+        else:
+            st.info("未上传测序文件；未启用测序验证时可以忽略。")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 with tab_run:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -855,10 +914,10 @@ with tab_run:
                 show_result_preview(last_result_dir)
 
     if run:
-        if not (do_stage1 or do_align or do_sanger):
+        if analysis_mode == "primer" and not (do_stage1 or do_align or do_sanger):
             st.error("请至少选择一个分析模块。")
             st.stop()
-        if primer_upload is None:
+        if analysis_mode == "primer" and primer_upload is None:
             st.error("请上传引物表 Excel。")
             st.stop()
         if not fasta_uploads:
@@ -868,10 +927,19 @@ with tab_run:
             st.error("已启用测序验证，请上传胶回收测序序列文件。")
             st.stop()
 
-        primer_path, fasta_paths, sanger_dir, run_root = save_inputs(primer_upload, fasta_uploads, sanger_uploads)
+        if analysis_mode == "direct":
+            primer_path = Path("unused_primer_table.xlsx")
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            run_root = session_root() / "runs" / run_id
+            input_root = run_root / "inputs"
+            fasta_paths = [write_uploaded_file(item, input_root / "genomes") for item in fasta_uploads]
+            sanger_dir = None
+        else:
+            primer_path, fasta_paths, sanger_dir, run_root = save_inputs(primer_upload, fasta_uploads, sanger_uploads)
         result_dir = run_root / "result"
         colors = {"A": color_a, "T": color_t, "C": color_c, "G": color_g, "gap": color_gap}
         command = build_command(
+            analysis_mode=analysis_mode,
             primer_table=primer_path,
             fasta_paths=fasta_paths,
             sanger_dir=sanger_dir,

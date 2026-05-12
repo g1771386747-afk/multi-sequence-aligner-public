@@ -898,6 +898,55 @@ def stage2_alignment_reports(
     write_csv(stage / "multi_sequence_alignment_summary.csv", summary, ["primer_order", "primer_pair", "aligned_samples", "missing_samples", "variant_sites", "pdf", "alignment_fasta", "variant_table"])
 
 
+def direct_alignment_report(root: Path, records: list[FastaRecord], colors: dict[str, str], title: str = "直接多序列比对"):
+    stage = root / "02_direct_sequence_alignment"
+    pdf_dir = stage / "pdf"
+    html_dir = stage / "html"
+    fasta_dir = stage / "alignment_fasta"
+    table_dir = stage / "variant_tables"
+    seqs = [(r.sample, r.seq) for r in records if r.seq]
+    aln = msa_to_first(seqs)
+    fasta_path = fasta_dir / "direct_alignment.fasta"
+    fasta_path.parent.mkdir(parents=True, exist_ok=True)
+    with fasta_path.open("w", encoding="ascii") as f:
+        for name, seq in aln:
+            f.write(f">{name}\n{textwrap.fill(seq, 80)}\n")
+    position_labels: dict[int, str] = {}
+    if aln:
+        ref_pos = 0
+        for col, base in enumerate(aln[0][1]):
+            if base != "-":
+                ref_pos += 1
+                position_labels[col] = str(ref_pos)
+            else:
+                position_labels[col] = f"gap_after_{ref_pos}"
+    svg, variant_rows = alignment_pdf_svg(aln, title, colors, position_labels, primer_marks=None, chunk_size=90)
+    variant_path = table_dir / "direct_alignment.variant_sites.csv"
+    write_csv(variant_path, variant_rows, ["alignment_col", "position_label", "type", "states"])
+    summary = [
+        {
+            "alignment": "direct_alignment",
+            "aligned_samples": len(seqs),
+            "variant_sites": len(variant_rows),
+            "html": str(html_dir / "direct_alignment.html"),
+            "pdf": str(pdf_dir / "direct_alignment.pdf"),
+            "alignment_fasta": str(fasta_path),
+            "variant_table": str(variant_path),
+        }
+    ]
+    body = (
+        f"<h1>{html.escape(title)}</h1>"
+        f"<p>Samples: {len(seqs)} aligned. Reference coordinate labels use the first uploaded sequence.</p>"
+        f"<div>{svg}</div>"
+    )
+    html_path = html_dir / "direct_alignment.html"
+    pdf_path = pdf_dir / "direct_alignment.pdf"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html_doc(title, body, landscape=True), encoding="utf-8")
+    edge_print_pdf(html_path, pdf_path)
+    write_csv(stage / "direct_alignment_summary.csv", summary, ["alignment", "aligned_samples", "variant_sites", "html", "pdf", "alignment_fasta", "variant_table"])
+
+
 def parse_colors(args) -> dict[str, str]:
     colors = dict(BASE_COLORS)
     for key, value in [("A", args.color_a), ("T", args.color_t), ("C", args.color_c), ("G", args.color_g), ("-", args.color_gap)]:
@@ -1395,9 +1444,9 @@ def create_stage3_word_report(root: Path, summary_rows: list[dict], missing_rows
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PCR amplicon multi-sequence alignment workflow")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["stage1", "align", "full", "sanger-index", "sanger-compare"]:
+    for name in ["stage1", "align", "full", "sanger-index", "sanger-compare", "direct-align"]:
         p = sub.add_parser(name)
-        p.add_argument("--primer-table", required=name != "sanger-index", help="Primer Excel table")
+        p.add_argument("--primer-table", required=name not in {"sanger-index", "direct-align"}, help="Primer Excel table")
         p.add_argument("--genome-dir", help="Directory containing genome FASTA files")
         p.add_argument("--fasta", action="append", help="Genome FASTA file or directory; can repeat")
         p.add_argument("--out-dir", help="Run output directory; default creates desktop timestamp folder")
@@ -1420,6 +1469,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     root = run_root(args.out_dir)
+    if args.cmd == "direct-align":
+        records = read_fastas(args.fasta, args.genome_dir)
+        if not records:
+            raise SystemExit("No genome FASTA records found.")
+        input_index(root, [], records)
+        direct_alignment_report(root, records, parse_colors(args))
+        if args.zip_pdfs:
+            zip_path = zip_pdfs(root)
+            print(f"PDF zip: {zip_path}")
+        print(root)
+        return 0
     if args.cmd == "sanger-index":
         if not args.sanger_dir:
             raise SystemExit("--sanger-dir is required for sanger-index")
