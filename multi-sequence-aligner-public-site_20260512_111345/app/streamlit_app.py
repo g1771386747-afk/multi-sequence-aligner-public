@@ -735,8 +735,19 @@ with mode_cols[1]:
         max_product = st.number_input("最大扩增长度 bp", min_value=100, max_value=50000, value=5000, step=100)
     st.markdown("</div>", unsafe_allow_html=True)
 
-color_expander = st.expander("碱基颜色设置", expanded=False)
-with color_expander:
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown(
+    """
+    <div class="section-head">
+        <div>
+            <div class="section-title">4. 碱基颜色</div>
+            <div class="section-subtitle">用于多序列比对图和 PDF 中的 A/T/C/G/gap 显示。</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+with st.container():
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         color_a = st.color_picker("A", "#1aa260")
@@ -748,6 +759,7 @@ with color_expander:
         color_g = st.color_picker("G", "#111111")
     with c5:
         color_gap = st.color_picker("gap", "#d9d9d9")
+st.markdown("</div>", unsafe_allow_html=True)
 
 mode_label = "完整分析" if do_sanger and do_align else "测序验证" if do_sanger else "多序列比对" if do_align else "理论扩增"
 st.markdown(
