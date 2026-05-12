@@ -39,6 +39,26 @@ BASE_COLORS = {
     "N": "#eeeeee",
 }
 
+DNA_LETTERS = set("ACGTRYSWKMBDHVN")
+CORE_BASES = set("ACGT")
+IUPAC_BY_BASES = {
+    frozenset({"A"}): "A",
+    frozenset({"C"}): "C",
+    frozenset({"G"}): "G",
+    frozenset({"T"}): "T",
+    frozenset({"A", "G"}): "R",
+    frozenset({"C", "T"}): "Y",
+    frozenset({"G", "C"}): "S",
+    frozenset({"A", "T"}): "W",
+    frozenset({"G", "T"}): "K",
+    frozenset({"A", "C"}): "M",
+    frozenset({"C", "G", "T"}): "B",
+    frozenset({"A", "G", "T"}): "D",
+    frozenset({"A", "C", "T"}): "H",
+    frozenset({"A", "C", "G"}): "V",
+    frozenset({"A", "C", "G", "T"}): "N",
+}
+
 
 @dataclass
 class PrimerPair:
@@ -166,7 +186,8 @@ def clean_seq(seq: str) -> str:
     return re.sub(r"[^A-Za-z]", "", seq or "").upper()
 
 
-def read_fasta(path: Path) -> FastaRecord:
+def read_fasta_records(path: Path) -> list[FastaRecord]:
+    records: list[FastaRecord] = []
     header = path.stem
     parts: list[str] = []
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -174,14 +195,37 @@ def read_fasta(path: Path) -> FastaRecord:
         if not line:
             continue
         if line.startswith(">"):
-            if not parts:
-                header = line[1:].strip() or path.stem
+            if parts:
+                idx = len(records) + 1
+                sample = path.stem if idx == 1 else safe_name((header.split() or [f"{path.stem}_{idx}"])[0])
+                records.append(FastaRecord(sample, path, header, "".join(parts)))
+                parts = []
+            header = line[1:].strip() or path.stem
         else:
             parts.append(clean_seq(line))
-    return FastaRecord(path.stem, path, header, "".join(parts))
+    if parts or not records:
+        idx = len(records) + 1
+        sample = path.stem if idx == 1 and not records else safe_name((header.split() or [f"{path.stem}_{idx}"])[0])
+        records.append(FastaRecord(sample, path, header, "".join(parts)))
+    if len(records) > 1:
+        renamed: list[FastaRecord] = []
+        used: set[str] = set()
+        for idx, rec in enumerate(records, 1):
+            base = safe_name((rec.header.split() or [f"{path.stem}_{idx}"])[0])
+            sample = base
+            if sample in used:
+                sample = f"{base}_{idx}"
+            used.add(sample)
+            renamed.append(FastaRecord(sample, rec.path, rec.header, rec.seq))
+        records = renamed
+    return records
 
 
-def read_fastas(paths: list[str] | None, genome_dir: str | None) -> list[FastaRecord]:
+def read_fasta(path: Path) -> FastaRecord:
+    return read_fasta_records(path)[0]
+
+
+def read_fastas(paths: list[str] | None, genome_dir: str | None, split_multifasta: bool = False) -> list[FastaRecord]:
     files: list[Path] = []
     if paths:
         for item in paths:
@@ -193,7 +237,15 @@ def read_fastas(paths: list[str] | None, genome_dir: str | None) -> list[FastaRe
     else:
         gdir = Path(genome_dir) if genome_dir else DEFAULT_GENOME_DIR
         files.extend(sorted(gdir.glob("*.fa*"), key=lambda p: natural_key(p.stem)))
-    return [read_fasta(p) for p in files if p.exists() and p.is_file()]
+    records: list[FastaRecord] = []
+    for p in files:
+        if not p.exists() or not p.is_file():
+            continue
+        if split_multifasta:
+            records.extend(read_fasta_records(p))
+        else:
+            records.append(read_fasta(p))
+    return records
 
 
 def natural_key(text: str):
@@ -398,6 +450,9 @@ th,td{{border:1px solid #aaa;padding:4px 6px;vertical-align:top}} th{{background
 .page{{page-break-after:always}} .warn{{color:#b42318;font-weight:700}} .ok{{color:#067647;font-weight:700}}
 .seq{{font-family:Consolas,monospace;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-all}}
 .legend span{{display:inline-block;margin-right:14px}} .chip{{display:inline-block;width:13px;height:13px;border:1px solid #777;vertical-align:-2px;margin-right:4px}}
+.metric-grid{{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:12px 0 18px}}
+.metric-grid div{{border:1px solid #d0d5dd;border-radius:8px;padding:8px;background:#f8fafc}}
+.metric-grid b{{display:block;font-size:18px;color:#101828}} .metric-grid span{{font-size:11px;color:#667085}}
 @page{{size:{page};margin:12mm}}
 </style></head><body>{body}</body></html>"""
 
@@ -677,6 +732,245 @@ def variant_columns(aln: list[tuple[str, str]]) -> list[int]:
     return cols
 
 
+def parse_sample_list(text: str | None) -> set[str]:
+    return {s.strip() for s in re.split(r"[,;，；\s]+", text or "") if s.strip()}
+
+
+def pairwise_identity_from_aligned(seq_a: str, seq_b: str) -> dict:
+    compared = matches = mismatches = gap_columns = 0
+    for a, b in zip(seq_a, seq_b):
+        if a == "-" or b == "-":
+            gap_columns += 1
+            continue
+        if a in {"N", "?"} or b in {"N", "?"}:
+            continue
+        compared += 1
+        if a == b:
+            matches += 1
+        else:
+            mismatches += 1
+    identity = round(matches * 100 / compared, 2) if compared else 0.0
+    return {
+        "compared_bases": compared,
+        "matches": matches,
+        "mismatches": mismatches,
+        "gap_columns": gap_columns,
+        "identity_percent": identity,
+    }
+
+
+def quick_ungapped_identity(seq_a: str, seq_b: str) -> float:
+    n = min(len(seq_a), len(seq_b))
+    if not n:
+        return 0.0
+    matches = sum(1 for a, b in zip(seq_a[:n], seq_b[:n]) if a == b and a in CORE_BASES)
+    return matches / n
+
+
+def input_quality_report(records: list[FastaRecord]) -> list[dict]:
+    rows: list[dict] = []
+    counts: dict[str, int] = {}
+    lengths = [len(r.seq) for r in records if r.seq]
+    min_len = min(lengths) if lengths else 0
+    max_len = max(lengths) if lengths else 0
+    for rec in records:
+        counts[rec.sample] = counts.get(rec.sample, 0) + 1
+    duplicate_names = {name for name, count in counts.items() if count > 1}
+    ref = records[0].seq if records else ""
+    for rec in records:
+        invalid = "".join(sorted({b for b in rec.seq if b not in DNA_LETTERS}))
+        warnings: list[str] = []
+        if not rec.seq:
+            warnings.append("empty_sequence")
+        if rec.sample in duplicate_names:
+            warnings.append("duplicate_sample_name")
+        if invalid:
+            warnings.append(f"non_iupac_letters:{invalid}")
+        if min_len and max_len and len(rec.seq) < max_len * 0.8:
+            warnings.append("much_shorter_than_longest")
+        if min_len and max_len and len(rec.seq) > min_len * 1.25:
+            warnings.append("much_longer_than_shortest")
+        if ref and rec.seq and rec.seq != ref:
+            forward = quick_ungapped_identity(ref, rec.seq)
+            reverse = quick_ungapped_identity(ref, revcomp(rec.seq))
+            if reverse > 0.75 and reverse > forward + 0.1:
+                warnings.append("possible_reverse_complement")
+        rows.append(
+            {
+                "sample": rec.sample,
+                "file": str(rec.path),
+                "header": rec.header,
+                "length_bp": len(rec.seq),
+                "invalid_letters": invalid,
+                "status": "WARN" if warnings else "OK",
+                "messages": ";".join(warnings),
+            }
+        )
+    return rows
+
+
+def alignment_summary_stats(aln: list[tuple[str, str]], variant_rows: list[dict], raw_records: list[FastaRecord]) -> dict:
+    if not aln:
+        return {
+            "samples": 0,
+            "alignment_length": 0,
+            "min_raw_length": 0,
+            "max_raw_length": 0,
+            "variant_sites": 0,
+            "snp_sites": 0,
+            "indel_sites": 0,
+            "conserved_sites": 0,
+            "conserved_percent": 0.0,
+        }
+    length = len(aln[0][1])
+    conserved = 0
+    for col in range(length):
+        states = {seq[col] for _, seq in aln if seq[col] not in {"N", "?"}}
+        if len(states) == 1:
+            conserved += 1
+    snp = sum(1 for row in variant_rows if row.get("type") == "SNV")
+    indel = sum(1 for row in variant_rows if row.get("type") == "InDel")
+    raw_lengths = [len(r.seq) for r in raw_records]
+    return {
+        "samples": len(aln),
+        "alignment_length": length,
+        "min_raw_length": min(raw_lengths) if raw_lengths else 0,
+        "max_raw_length": max(raw_lengths) if raw_lengths else 0,
+        "variant_sites": len(variant_rows),
+        "snp_sites": snp,
+        "indel_sites": indel,
+        "conserved_sites": conserved,
+        "conserved_percent": round(conserved * 100 / length, 2) if length else 0.0,
+    }
+
+
+def consensus_from_alignment(aln: list[tuple[str, str]]) -> str:
+    if not aln:
+        return ""
+    consensus: list[str] = []
+    for col in range(len(aln[0][1])):
+        bases = [seq[col] for _, seq in aln if seq[col] not in {"-", "N", "?"}]
+        if not bases:
+            continue
+        core = {b for b in bases if b in CORE_BASES}
+        if core:
+            consensus.append(IUPAC_BY_BASES.get(frozenset(core), "N"))
+        else:
+            consensus.append("N")
+    return "".join(consensus)
+
+
+def reference_difference_rows(aln: list[tuple[str, str]]) -> list[dict]:
+    if not aln:
+        return []
+    ref_name, ref_seq = aln[0]
+    rows: list[dict] = []
+    for name, seq in aln:
+        stats = pairwise_identity_from_aligned(ref_seq, seq)
+        rows.append(
+            {
+                "sample": name,
+                "reference": ref_name,
+                "identity_percent": stats["identity_percent"],
+                "compared_bases": stats["compared_bases"],
+                "matches": stats["matches"],
+                "mismatches": stats["mismatches"],
+                "gap_columns": stats["gap_columns"],
+            }
+        )
+    return rows
+
+
+def pairwise_identity_rows(aln: list[tuple[str, str]]) -> tuple[list[dict], list[dict]]:
+    long_rows: list[dict] = []
+    square_rows: list[dict] = []
+    for name_a, seq_a in aln:
+        square = {"sample": name_a}
+        for name_b, seq_b in aln:
+            stats = pairwise_identity_from_aligned(seq_a, seq_b)
+            square[name_b] = stats["identity_percent"]
+        square_rows.append(square)
+    for i, (name_a, seq_a) in enumerate(aln):
+        for name_b, seq_b in aln[i + 1 :]:
+            stats = pairwise_identity_from_aligned(seq_a, seq_b)
+            long_rows.append({"sample_a": name_a, "sample_b": name_b, **stats})
+    return long_rows, square_rows
+
+
+def identity_heatmap_svg(square_rows: list[dict], title: str = "样本两两相似度矩阵") -> str:
+    names = [str(row["sample"]) for row in square_rows]
+    if not names:
+        return ""
+    cell = 42
+    left = 150
+    top = 98
+    width = max(720, left + len(names) * cell + 40)
+    height = top + len(names) * cell + 92
+    parts = [
+        f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>",
+        "<rect width='100%' height='100%' fill='white'/>",
+        f"<text x='20' y='30' font-family='Arial, Microsoft YaHei' font-size='18' font-weight='700'>{html.escape(title)}</text>",
+        "<text x='20' y='50' font-family='Arial, Microsoft YaHei' font-size='11' fill='#475467'>数字为去除 gap/N 后的 pairwise identity (%)。</text>",
+    ]
+    for j, name in enumerate(names):
+        x = left + j * cell + cell / 2
+        parts.append(f"<text x='{x}' y='{top-10}' text-anchor='end' transform='rotate(-45 {x} {top-10})' font-family='Arial' font-size='10' fill='#344054'>{html.escape(name)}</text>")
+    for i, row in enumerate(square_rows):
+        y = top + i * cell
+        parts.append(f"<text x='18' y='{y+26}' font-family='Arial' font-size='11' fill='#344054'>{html.escape(str(row['sample']))}</text>")
+        for j, name in enumerate(names):
+            value = float(row.get(name, 0) or 0)
+            intensity = max(0, min(1, (value - 70) / 30))
+            r = int(239 - 196 * intensity)
+            g = int(246 - 88 * intensity)
+            b = int(255 - 77 * intensity)
+            x = left + j * cell
+            text_color = "#ffffff" if value >= 92 else "#101828"
+            parts.append(f"<rect x='{x}' y='{y}' width='{cell-2}' height='{cell-2}' rx='4' fill='rgb({r},{g},{b})' stroke='#ffffff'/>")
+            parts.append(f"<text x='{x+cell/2}' y='{y+24}' text-anchor='middle' font-family='Arial' font-size='10' font-weight='700' fill='{text_color}'>{value:.1f}</text>")
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def group_comparison_rows(aln: list[tuple[str, str]], group_a: set[str], group_b: set[str], position_labels: dict[int, str]) -> list[dict]:
+    if not aln or not group_a or not group_b:
+        return []
+    lookup = {name: seq for name, seq in aln}
+    a_names = [name for name in lookup if name in group_a]
+    b_names = [name for name in lookup if name in group_b]
+    if not a_names or not b_names:
+        return []
+    rows: list[dict] = []
+    for col in range(len(aln[0][1])):
+        a_states = {lookup[name][col] for name in a_names if lookup[name][col] in CORE_BASES}
+        b_states = {lookup[name][col] for name in b_names if lookup[name][col] in CORE_BASES}
+        if len(a_states) == 1 and len(b_states) == 1 and a_states != b_states:
+            rows.append(
+                {
+                    "alignment_col": col + 1,
+                    "position_label": position_labels.get(col, str(col + 1)),
+                    "group_a_base": "".join(sorted(a_states)),
+                    "group_b_base": "".join(sorted(b_states)),
+                    "type": "fixed_difference",
+                    "group_a_samples": ";".join(a_names),
+                    "group_b_samples": ";".join(b_names),
+                }
+            )
+    return rows
+
+
+def html_table(rows: list[dict], max_rows: int = 30) -> str:
+    if not rows:
+        return "<p>No records.</p>"
+    fields = list(rows[0].keys())
+    head = "".join(f"<th>{html.escape(str(field))}</th>" for field in fields)
+    body = []
+    for row in rows[:max_rows]:
+        body.append("<tr>" + "".join(f"<td>{html.escape(str(row.get(field, '')))}</td>" for field in fields) + "</tr>")
+    note = f"<p>Showing first {max_rows} rows.</p>" if len(rows) > max_rows else ""
+    return f"{note}<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
 def display_window_sequence(hit: AmpliconHit, display_flank: int | None = None) -> str:
     """Return the product plus flanks in the same F-to-R orientation as product_seq."""
     seq = revcomp(hit.window_seq) if hit.strand == "-" else hit.window_seq
@@ -898,12 +1192,21 @@ def stage2_alignment_reports(
     write_csv(stage / "multi_sequence_alignment_summary.csv", summary, ["primer_order", "primer_pair", "aligned_samples", "missing_samples", "variant_sites", "pdf", "alignment_fasta", "variant_table"])
 
 
-def direct_alignment_report(root: Path, records: list[FastaRecord], colors: dict[str, str], title: str = "直接多序列比对"):
+def direct_alignment_report(
+    root: Path,
+    records: list[FastaRecord],
+    colors: dict[str, str],
+    title: str = "直接多序列比对",
+    group_a: str | None = None,
+    group_b: str | None = None,
+):
     stage = root / "02_direct_sequence_alignment"
     pdf_dir = stage / "pdf"
     html_dir = stage / "html"
     fasta_dir = stage / "alignment_fasta"
     table_dir = stage / "variant_tables"
+    stats_dir = stage / "analysis_tables"
+    consensus_dir = stage / "consensus_fasta"
     seqs = [(r.sample, r.seq) for r in records if r.seq]
     aln = msa_to_first(seqs)
     fasta_path = fasta_dir / "direct_alignment.fasta"
@@ -923,20 +1226,60 @@ def direct_alignment_report(root: Path, records: list[FastaRecord], colors: dict
     svg, variant_rows = alignment_pdf_svg(aln, title, colors, position_labels, primer_marks=None, chunk_size=90)
     variant_path = table_dir / "direct_alignment.variant_sites.csv"
     write_csv(variant_path, variant_rows, ["alignment_col", "position_label", "type", "states"])
+    quality_rows = input_quality_report(records)
+    stats = alignment_summary_stats(aln, variant_rows, records)
+    ref_rows = reference_difference_rows(aln)
+    pairwise_long, pairwise_square = pairwise_identity_rows(aln)
+    consensus_seq = consensus_from_alignment(aln)
+    group_rows = group_comparison_rows(aln, parse_sample_list(group_a), parse_sample_list(group_b), position_labels)
+    write_csv(stats_dir / "input_quality_check.csv", quality_rows, ["sample", "file", "header", "length_bp", "invalid_letters", "status", "messages"])
+    write_csv(stats_dir / "reference_differences.csv", ref_rows, ["sample", "reference", "identity_percent", "compared_bases", "matches", "mismatches", "gap_columns"])
+    write_csv(stats_dir / "pairwise_identity_long.csv", pairwise_long, ["sample_a", "sample_b", "compared_bases", "matches", "mismatches", "gap_columns", "identity_percent"])
+    square_fields = ["sample"] + [name for name, _ in aln]
+    write_csv(stats_dir / "pairwise_identity_matrix.csv", pairwise_square, square_fields)
+    write_csv(stats_dir / "group_fixed_differences.csv", group_rows, ["alignment_col", "position_label", "group_a_base", "group_b_base", "type", "group_a_samples", "group_b_samples"])
+    write_csv(
+        stats_dir / "analysis_overview.csv",
+        [{"metric": key, "value": value} for key, value in stats.items()],
+        ["metric", "value"],
+    )
+    consensus_path = consensus_dir / "direct_alignment_consensus.fasta"
+    consensus_path.parent.mkdir(parents=True, exist_ok=True)
+    consensus_path.write_text(f">direct_alignment_consensus\n{textwrap.fill(consensus_seq, 80)}\n", encoding="ascii")
+    heatmap_svg = identity_heatmap_svg(pairwise_square)
     summary = [
         {
             "alignment": "direct_alignment",
             "aligned_samples": len(seqs),
             "variant_sites": len(variant_rows),
+            "snp_sites": stats["snp_sites"],
+            "indel_sites": stats["indel_sites"],
+            "conserved_percent": stats["conserved_percent"],
             "html": str(html_dir / "direct_alignment.html"),
             "pdf": str(pdf_dir / "direct_alignment.pdf"),
             "alignment_fasta": str(fasta_path),
+            "consensus_fasta": str(consensus_path),
             "variant_table": str(variant_path),
+            "pairwise_identity_matrix": str(stats_dir / "pairwise_identity_matrix.csv"),
+            "group_fixed_differences": str(stats_dir / "group_fixed_differences.csv"),
         }
     ]
     body = (
         f"<h1>{html.escape(title)}</h1>"
         f"<p>Samples: {len(seqs)} aligned. Reference coordinate labels use the first uploaded sequence.</p>"
+        f"<div class='metric-grid'>"
+        f"<div><b>{stats['samples']}</b><span>样本数</span></div>"
+        f"<div><b>{stats['alignment_length']}</b><span>比对长度</span></div>"
+        f"<div><b>{stats['variant_sites']}</b><span>变异位点</span></div>"
+        f"<div><b>{stats['snp_sites']}</b><span>SNP</span></div>"
+        f"<div><b>{stats['indel_sites']}</b><span>InDel</span></div>"
+        f"<div><b>{stats['conserved_percent']}%</b><span>保守位点</span></div>"
+        f"</div>"
+        f"<h2>输入体检</h2>{html_table(quality_rows)}"
+        f"<h2>相对参考序列差异</h2>{html_table(ref_rows)}"
+        f"<h2>样本两两相似度</h2><div>{heatmap_svg}</div>{html_table(pairwise_long)}"
+        f"<h2>分组固定差异</h2>{html_table(group_rows)}"
+        f"<h2>多序列比对图</h2>"
         f"<div>{svg}</div>"
     )
     html_path = html_dir / "direct_alignment.html"
@@ -944,7 +1287,25 @@ def direct_alignment_report(root: Path, records: list[FastaRecord], colors: dict
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html_doc(title, body, landscape=True), encoding="utf-8")
     edge_print_pdf(html_path, pdf_path)
-    write_csv(stage / "direct_alignment_summary.csv", summary, ["alignment", "aligned_samples", "variant_sites", "html", "pdf", "alignment_fasta", "variant_table"])
+    write_csv(
+        stage / "direct_alignment_summary.csv",
+        summary,
+        [
+            "alignment",
+            "aligned_samples",
+            "variant_sites",
+            "snp_sites",
+            "indel_sites",
+            "conserved_percent",
+            "html",
+            "pdf",
+            "alignment_fasta",
+            "consensus_fasta",
+            "variant_table",
+            "pairwise_identity_matrix",
+            "group_fixed_differences",
+        ],
+    )
 
 
 def parse_colors(args) -> dict[str, str]:
@@ -1459,6 +1820,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--color-c", default=None)
         p.add_argument("--color-g", default=None)
         p.add_argument("--color-gap", default=None)
+        p.add_argument("--group-a", default=None, help="Optional group A sample names for direct alignment comparison")
+        p.add_argument("--group-b", default=None, help="Optional group B sample names for direct alignment comparison")
         p.add_argument("--zip-pdfs", action="store_true")
         p.add_argument("--sanger-dir", help="Gel-recovered sequencing result folder")
         p.add_argument("--number-map", help="Sequencing number to sample map, e.g. 1=11,2=51,3=1")
@@ -1470,11 +1833,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     root = run_root(args.out_dir)
     if args.cmd == "direct-align":
-        records = read_fastas(args.fasta, args.genome_dir)
+        records = read_fastas(args.fasta, args.genome_dir, split_multifasta=True)
         if not records:
             raise SystemExit("No genome FASTA records found.")
         input_index(root, [], records)
-        direct_alignment_report(root, records, parse_colors(args))
+        direct_alignment_report(root, records, parse_colors(args), group_a=args.group_a, group_b=args.group_b)
         if args.zip_pdfs:
             zip_path = zip_pdfs(root)
             print(f"PDF zip: {zip_path}")

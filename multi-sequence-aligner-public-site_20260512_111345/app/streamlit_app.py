@@ -435,6 +435,8 @@ def build_command(
     align_flank: int,
     max_product: int,
     align_samples: str,
+    group_a: str,
+    group_b: str,
     colors: dict[str, str],
 ) -> list[str]:
     if analysis_mode == "direct":
@@ -483,6 +485,11 @@ def build_command(
             "--color-gap",
             colors["gap"],
         ]
+    if analysis_mode == "direct":
+        if group_a.strip():
+            cmd += ["--group-a", group_a.strip()]
+        if group_b.strip():
+            cmd += ["--group-b", group_b.strip()]
     if analysis_mode != "direct" and do_sanger:
         cmd += ["--sanger-dir", str(sanger_dir or "")]
         if number_map.strip():
@@ -604,6 +611,12 @@ def clear_session_files():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def clear_previous_run_state():
+    clear_session_files()
+    st.session_state.pop("last_zip", None)
+    st.session_state.pop("last_result_dir", None)
+
+
 def cleanup_old_sessions(max_age_hours: int = 24):
     sessions_root = APP_DATA_ROOT / "sessions"
     if not sessions_root.exists():
@@ -628,7 +641,7 @@ st.markdown(
     <div class="topbar">
         <div>
             <div class="brand-title">多序列比对分析平台</div>
-            <p class="brand-copy">面向叶绿体/基因组片段分析的在线工具。上传引物表和样本 FASTA，即可生成理论扩增片段、多序列比对图、变异位点表，并按需下载 PDF。</p>
+            <p class="brand-copy">面向通用 DNA 序列的在线比对工具。可直接上传 FASTA 进行多序列比对，也可切换到引物扩增片段分析，生成理论扩增片段、变异位点表、相似度矩阵和 PDF 结果。</p>
         </div>
         <div class="privacy-note">公共上传工具</div>
     </div>
@@ -759,6 +772,13 @@ with mode_cols[1]:
         unsafe_allow_html=True,
     )
     align_samples = st.text_input("参与比对的样本", "all")
+    if analysis_mode == "direct":
+        st.caption("直接比对支持一个多序列 FASTA，或多个 FASTA 文件。分组比较为可选。")
+        group_a = st.text_input("A 组样本（可选）", "", placeholder="例如 sample1,sample2")
+        group_b = st.text_input("B 组样本（可选）", "", placeholder="例如 sample3,sample4")
+    else:
+        group_a = ""
+        group_b = ""
     if analysis_mode == "primer" and do_sanger:
         number_map = st.text_input(
             "测序编号对应样本编号（可选）",
@@ -890,9 +910,7 @@ with tab_run:
     st.markdown("</div>", unsafe_allow_html=True)
 
     if clear:
-        clear_session_files()
-        st.session_state.pop("last_zip", None)
-        st.session_state.pop("last_result_dir", None)
+        clear_previous_run_state()
         st.rerun()
 
     if st.session_state.get("last_zip"):
@@ -923,10 +941,13 @@ with tab_run:
         if not fasta_uploads:
             st.error("请至少上传一个样本 FASTA 文件。")
             st.stop()
+        if analysis_mode == "direct" and len(fasta_uploads) < 2:
+            st.info("如果上传的是一个多序列 FASTA，可以继续；如果每个文件只有一个样本，建议至少上传两个 FASTA。")
         if do_sanger and not sanger_uploads:
             st.error("已启用测序验证，请上传胶回收测序序列文件。")
             st.stop()
 
+        clear_previous_run_state()
         if analysis_mode == "direct":
             primer_path = Path("unused_primer_table.xlsx")
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -954,6 +975,8 @@ with tab_run:
             align_flank=int(align_flank),
             max_product=int(max_product),
             align_samples=align_samples,
+            group_a=group_a,
+            group_b=group_b,
             colors=colors,
         )
 
