@@ -959,6 +959,166 @@ def group_comparison_rows(aln: list[tuple[str, str]], group_a: set[str], group_b
     return rows
 
 
+def variant_matrix_rows(aln: list[tuple[str, str]], variant_rows: list[dict]) -> list[dict]:
+    if not aln or not variant_rows:
+        return []
+    cols = [int(row["alignment_col"]) - 1 for row in variant_rows]
+    rows: list[dict] = []
+    for name, seq in aln:
+        row = {"sample": name}
+        for source, col in zip(variant_rows, cols):
+            label = source.get("position_label") or source.get("alignment_col")
+            row[str(label)] = seq[col]
+        rows.append(row)
+    return rows
+
+
+def haplotype_rows(aln: list[tuple[str, str]], variant_rows: list[dict]) -> tuple[list[dict], list[tuple[str, str]]]:
+    groups: dict[str, list[str]] = {}
+    for name, seq in aln:
+        groups.setdefault(seq, []).append(name)
+    var_cols = [int(row["alignment_col"]) - 1 for row in variant_rows]
+    rows: list[dict] = []
+    fasta_rows: list[tuple[str, str]] = []
+    for idx, (seq, samples) in enumerate(sorted(groups.items(), key=lambda item: (-len(item[1]), item[1][0])), 1):
+        hap_id = f"H{idx}"
+        signature = "".join(seq[col] for col in var_cols) if var_cols else "no_variant"
+        ungapped = seq.replace("-", "")
+        rows.append(
+            {
+                "haplotype": hap_id,
+                "sample_count": len(samples),
+                "samples": ";".join(samples),
+                "variant_signature": signature,
+                "sequence_length_no_gaps": len(ungapped),
+            }
+        )
+        fasta_rows.append((hap_id + "|" + "_".join(samples[:6]), ungapped))
+    return rows, fasta_rows
+
+
+def aligned_distance(seq_a: str, seq_b: str) -> float:
+    stats = pairwise_identity_from_aligned(seq_a, seq_b)
+    return max(0.0, min(1.0, 1.0 - stats["identity_percent"] / 100.0))
+
+
+def upgma_tree(aln: list[tuple[str, str]]) -> dict | None:
+    if not aln:
+        return None
+    if len(aln) == 1:
+        name = aln[0][0]
+        return {"label": name, "members": [name], "height": 0.0, "left": None, "right": None, "newick": f"{safe_name(name)}:0.0000"}
+    seq_by_name = {name: seq for name, seq in aln}
+    clusters: dict[int, dict] = {}
+    for idx, (name, _seq) in enumerate(aln):
+        clusters[idx] = {"label": name, "members": [name], "height": 0.0, "left": None, "right": None, "newick": safe_name(name)}
+    next_id = len(clusters)
+
+    def cluster_distance(a: dict, b: dict) -> float:
+        vals = [aligned_distance(seq_by_name[x], seq_by_name[y]) for x in a["members"] for y in b["members"]]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    while len(clusters) > 1:
+        ids = sorted(clusters)
+        best: tuple[float, int, int] | None = None
+        for i, ida in enumerate(ids):
+            for idb in ids[i + 1 :]:
+                d = cluster_distance(clusters[ida], clusters[idb])
+                if best is None or d < best[0]:
+                    best = (d, ida, idb)
+        if best is None:
+            break
+        dist, ida, idb = best
+        left = clusters.pop(ida)
+        right = clusters.pop(idb)
+        height = dist / 2.0
+        left_len = max(0.0, height - float(left["height"]))
+        right_len = max(0.0, height - float(right["height"]))
+        merged = {
+            "label": f"node{next_id}",
+            "members": left["members"] + right["members"],
+            "height": height,
+            "left": left,
+            "right": right,
+            "newick": f"({left['newick']}:{left_len:.4f},{right['newick']}:{right_len:.4f})",
+        }
+        clusters[next_id] = merged
+        next_id += 1
+    return next(iter(clusters.values()))
+
+
+def tree_newick(root: dict | None) -> str:
+    if not root:
+        return ";"
+    return f"{root['newick']};"
+
+
+def upgma_tree_svg(root: dict | None, title: str = "UPGMA 样本聚类树") -> str:
+    if not root:
+        return ""
+    leaves: list[dict] = []
+
+    def collect(node: dict):
+        if not node.get("left") and not node.get("right"):
+            leaves.append(node)
+            return
+        collect(node["left"])
+        collect(node["right"])
+
+    collect(root)
+    row_h = 30
+    left = 36
+    right = 760
+    top = 70
+    width = 940
+    height = max(160, top + len(leaves) * row_h + 45)
+    max_height = max(float(root.get("height", 0.0)), 0.0001)
+    y_by_id: dict[int, float] = {}
+    x_by_id: dict[int, float] = {}
+    for idx, leaf in enumerate(leaves):
+        y_by_id[id(leaf)] = top + idx * row_h
+
+    def assign(node: dict):
+        if not node.get("left") and not node.get("right"):
+            y = y_by_id[id(node)]
+            x = right
+        else:
+            assign(node["left"])
+            assign(node["right"])
+            y = (y_by_id[id(node["left"])] + y_by_id[id(node["right"])]) / 2
+            x = left + (max_height - float(node.get("height", 0.0))) / max_height * (right - left)
+            y_by_id[id(node)] = y
+        x_by_id[id(node)] = x
+
+    assign(root)
+    parts = [
+        f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>",
+        "<rect width='100%' height='100%' fill='white'/>",
+        f"<text x='20' y='30' font-family='Arial, Microsoft YaHei' font-size='18' font-weight='700'>{html.escape(title)}</text>",
+        "<text x='20' y='50' font-family='Arial, Microsoft YaHei' font-size='11' fill='#475467'>距离基于 pairwise identity 自动估算，用于快速查看样本接近关系。</text>",
+    ]
+
+    def draw(node: dict):
+        x = x_by_id[id(node)]
+        y = y_by_id[id(node)]
+        if node.get("left") and node.get("right"):
+            children = [node["left"], node["right"]]
+            ys = [y_by_id[id(c)] for c in children]
+            parts.append(f"<line x1='{x}' y1='{min(ys)}' x2='{x}' y2='{max(ys)}' stroke='#344054' stroke-width='1.4'/>")
+            for child in children:
+                cx = x_by_id[id(child)]
+                cy = y_by_id[id(child)]
+                parts.append(f"<line x1='{x}' y1='{cy}' x2='{cx}' y2='{cy}' stroke='#344054' stroke-width='1.4'/>")
+                draw(child)
+        else:
+            parts.append(f"<circle cx='{x}' cy='{y}' r='3' fill='#0f766e'/>")
+            parts.append(f"<text x='{x+8}' y='{y+4}' font-family='Arial' font-size='12' fill='#101828'>{html.escape(str(node['label']))}</text>")
+
+    draw(root)
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
 def html_table(rows: list[dict], max_rows: int = 30) -> str:
     if not rows:
         return "<p>No records.</p>"
@@ -1232,12 +1392,19 @@ def direct_alignment_report(
     pairwise_long, pairwise_square = pairwise_identity_rows(aln)
     consensus_seq = consensus_from_alignment(aln)
     group_rows = group_comparison_rows(aln, parse_sample_list(group_a), parse_sample_list(group_b), position_labels)
+    variant_matrix = variant_matrix_rows(aln, variant_rows)
+    hap_rows, hap_fasta_rows = haplotype_rows(aln, variant_rows)
+    tree_root = upgma_tree(aln)
+    tree_text = tree_newick(tree_root)
     write_csv(stats_dir / "input_quality_check.csv", quality_rows, ["sample", "file", "header", "length_bp", "invalid_letters", "status", "messages"])
     write_csv(stats_dir / "reference_differences.csv", ref_rows, ["sample", "reference", "identity_percent", "compared_bases", "matches", "mismatches", "gap_columns"])
     write_csv(stats_dir / "pairwise_identity_long.csv", pairwise_long, ["sample_a", "sample_b", "compared_bases", "matches", "mismatches", "gap_columns", "identity_percent"])
     square_fields = ["sample"] + [name for name, _ in aln]
     write_csv(stats_dir / "pairwise_identity_matrix.csv", pairwise_square, square_fields)
     write_csv(stats_dir / "group_fixed_differences.csv", group_rows, ["alignment_col", "position_label", "group_a_base", "group_b_base", "type", "group_a_samples", "group_b_samples"])
+    variant_matrix_fields = ["sample"] + [str(row.get("position_label") or row.get("alignment_col")) for row in variant_rows]
+    write_csv(stats_dir / "variant_site_matrix.csv", variant_matrix, variant_matrix_fields)
+    write_csv(stats_dir / "haplotypes.csv", hap_rows, ["haplotype", "sample_count", "samples", "variant_signature", "sequence_length_no_gaps"])
     write_csv(
         stats_dir / "analysis_overview.csv",
         [{"metric": key, "value": value} for key, value in stats.items()],
@@ -1246,11 +1413,20 @@ def direct_alignment_report(
     consensus_path = consensus_dir / "direct_alignment_consensus.fasta"
     consensus_path.parent.mkdir(parents=True, exist_ok=True)
     consensus_path.write_text(f">direct_alignment_consensus\n{textwrap.fill(consensus_seq, 80)}\n", encoding="ascii")
+    haplotype_fasta_path = consensus_dir / "direct_alignment_haplotypes.fasta"
+    with haplotype_fasta_path.open("w", encoding="ascii") as f:
+        for name, seq in hap_fasta_rows:
+            f.write(f">{name}\n{textwrap.fill(seq, 80)}\n")
+    tree_path = stats_dir / "upgma_tree.newick"
+    tree_path.parent.mkdir(parents=True, exist_ok=True)
+    tree_path.write_text(tree_text + "\n", encoding="utf-8")
     heatmap_svg = identity_heatmap_svg(pairwise_square)
+    tree_svg = upgma_tree_svg(tree_root)
     summary = [
         {
             "alignment": "direct_alignment",
             "aligned_samples": len(seqs),
+            "haplotypes": len(hap_rows),
             "variant_sites": len(variant_rows),
             "snp_sites": stats["snp_sites"],
             "indel_sites": stats["indel_sites"],
@@ -1259,8 +1435,12 @@ def direct_alignment_report(
             "pdf": str(pdf_dir / "direct_alignment.pdf"),
             "alignment_fasta": str(fasta_path),
             "consensus_fasta": str(consensus_path),
+            "haplotype_fasta": str(haplotype_fasta_path),
             "variant_table": str(variant_path),
+            "variant_site_matrix": str(stats_dir / "variant_site_matrix.csv"),
+            "haplotype_table": str(stats_dir / "haplotypes.csv"),
             "pairwise_identity_matrix": str(stats_dir / "pairwise_identity_matrix.csv"),
+            "upgma_tree_newick": str(tree_path),
             "group_fixed_differences": str(stats_dir / "group_fixed_differences.csv"),
         }
     ]
@@ -1271,13 +1451,17 @@ def direct_alignment_report(
         f"<div><b>{stats['samples']}</b><span>样本数</span></div>"
         f"<div><b>{stats['alignment_length']}</b><span>比对长度</span></div>"
         f"<div><b>{stats['variant_sites']}</b><span>变异位点</span></div>"
+        f"<div><b>{len(hap_rows)}</b><span>单倍型</span></div>"
         f"<div><b>{stats['snp_sites']}</b><span>SNP</span></div>"
         f"<div><b>{stats['indel_sites']}</b><span>InDel</span></div>"
         f"<div><b>{stats['conserved_percent']}%</b><span>保守位点</span></div>"
         f"</div>"
         f"<h2>输入体检</h2>{html_table(quality_rows)}"
+        f"<h2>单倍型 / 去重复序列</h2>{html_table(hap_rows)}"
+        f"<h2>只看变异位点矩阵</h2>{html_table(variant_matrix)}"
         f"<h2>相对参考序列差异</h2>{html_table(ref_rows)}"
         f"<h2>样本两两相似度</h2><div>{heatmap_svg}</div>{html_table(pairwise_long)}"
+        f"<h2>UPGMA 样本聚类树</h2><div>{tree_svg}</div><p>Newick 文件已写入结果包。</p>"
         f"<h2>分组固定差异</h2>{html_table(group_rows)}"
         f"<h2>多序列比对图</h2>"
         f"<div>{svg}</div>"
@@ -1293,6 +1477,7 @@ def direct_alignment_report(
         [
             "alignment",
             "aligned_samples",
+            "haplotypes",
             "variant_sites",
             "snp_sites",
             "indel_sites",
@@ -1301,8 +1486,12 @@ def direct_alignment_report(
             "pdf",
             "alignment_fasta",
             "consensus_fasta",
+            "haplotype_fasta",
             "variant_table",
+            "variant_site_matrix",
+            "haplotype_table",
             "pairwise_identity_matrix",
+            "upgma_tree_newick",
             "group_fixed_differences",
         ],
     )

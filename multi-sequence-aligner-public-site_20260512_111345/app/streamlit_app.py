@@ -542,17 +542,44 @@ def result_assets(result_dir: Path) -> tuple[list[Path], list[Path]]:
     return html_files, pdf_files
 
 
+def result_data_assets(result_dir: Path) -> list[Path]:
+    if not result_dir.exists():
+        return []
+    suffixes = {".csv", ".fasta", ".fa", ".newick", ".docx"}
+    return sorted(
+        [p for p in result_dir.glob("**/*") if p.is_file() and p.suffix.lower() in suffixes],
+        key=lambda p: (preview_rank(p), str(p).lower()),
+    )
+
+
 def asset_label(path: Path, root: Path) -> str:
     label = str(path.relative_to(root)).replace("\\", " / ")
     label = label.replace("01_sample_amplicon_reports / html /", "理论扩增 / ")
     label = label.replace("01_sample_amplicon_reports / pdf /", "理论扩增 PDF / ")
     label = label.replace("02_direct_sequence_alignment / html /", "直接多序列比对 / ")
     label = label.replace("02_direct_sequence_alignment / pdf /", "直接多序列比对 PDF / ")
+    label = label.replace("02_direct_sequence_alignment / analysis_tables /", "直接比对表格 / ")
+    label = label.replace("02_direct_sequence_alignment / consensus_fasta /", "直接比对 FASTA / ")
+    label = label.replace("02_direct_sequence_alignment / alignment_fasta /", "直接比对 FASTA / ")
+    label = label.replace("02_direct_sequence_alignment / variant_tables /", "直接比对变异表 / ")
     label = label.replace("02_multi_sequence_alignment / html /", "多序列比对 / ")
     label = label.replace("02_multi_sequence_alignment / pdf /", "多序列比对 PDF / ")
     label = label.replace("03_sanger_vs_theory / html /", "测序比对 / ")
     label = label.replace("03_sanger_vs_theory / pdf /", "测序比对 PDF / ")
     return label
+
+
+def mime_for_download(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        return "application/pdf"
+    if ext == ".csv":
+        return "text/csv"
+    if ext in {".fasta", ".fa", ".newick"}:
+        return "text/plain"
+    if ext == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
 
 
 def matching_pdf_for_html(html_path: Path, pdf_files: list[Path]) -> Path | None:
@@ -564,7 +591,8 @@ def matching_pdf_for_html(html_path: Path, pdf_files: list[Path]) -> Path | None
 
 def show_result_preview(result_dir: Path):
     html_files, pdf_files = result_assets(result_dir)
-    if not html_files and not pdf_files:
+    data_files = result_data_assets(result_dir)
+    if not html_files and not pdf_files and not data_files:
         st.warning("没有找到可预览或可下载的结果文件。")
         return
 
@@ -598,9 +626,25 @@ def show_result_preview(result_dir: Path):
                 "下载",
                 data=pdf.read_bytes(),
                 file_name=pdf.name,
-                mime="application/pdf",
+                mime=mime_for_download(pdf),
                 use_container_width=True,
                 key=f"download-pdf-{index}-{hashlib.sha1(str(pdf).encode()).hexdigest()}",
+            )
+    if data_files:
+        st.markdown("##### 关键结果文件")
+        for index, data_file in enumerate(data_files[:30]):
+            cols = st.columns([3.2, 1])
+            cols[0].markdown(
+                f"<div class='asset-row'><strong>{asset_label(data_file, result_dir)}</strong><span class='muted'>{file_size_label(data_file.stat().st_size)}</span></div>",
+                unsafe_allow_html=True,
+            )
+            cols[1].download_button(
+                "下载",
+                data=data_file.read_bytes(),
+                file_name=data_file.name,
+                mime=mime_for_download(data_file),
+                use_container_width=True,
+                key=f"download-data-{index}-{hashlib.sha1(str(data_file).encode()).hexdigest()}",
             )
     st.markdown("</div>", unsafe_allow_html=True)
 
