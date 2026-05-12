@@ -247,6 +247,39 @@ st.markdown(
     .stDownloadButton > button {
         border-radius: 8px;
     }
+    label,
+    [data-testid="stWidgetLabel"],
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] p {
+        color: var(--ink) !important;
+    }
+    [data-testid="stCheckbox"] label,
+    [data-testid="stCheckbox"] label span,
+    [data-testid="stCheckbox"] label p,
+    [data-testid="stCheckbox"] div,
+    .stCheckbox label,
+    .stCheckbox span,
+    .stCheckbox p {
+        color: var(--ink) !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stCheckbox"] [aria-disabled="true"],
+    [data-testid="stCheckbox"] [disabled],
+    .stCheckbox [aria-disabled="true"],
+    .stCheckbox [disabled] {
+        color: #667085 !important;
+        opacity: 1 !important;
+    }
+    input,
+    textarea,
+    [data-baseweb="input"] input {
+        color: var(--ink) !important;
+        background: #ffffff !important;
+    }
+    [data-baseweb="checkbox"] {
+        opacity: 1 !important;
+    }
     @media (max-width: 980px) {
         .topbar {flex-direction: column;}
         .privacy-note {white-space: normal;}
