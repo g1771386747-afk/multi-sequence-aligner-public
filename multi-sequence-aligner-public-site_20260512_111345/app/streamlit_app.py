@@ -445,7 +445,9 @@ def build_command(
             colors["gap"],
         ]
     if do_sanger:
-        cmd += ["--sanger-dir", str(sanger_dir or ""), "--number-map", number_map]
+        cmd += ["--sanger-dir", str(sanger_dir or "")]
+        if number_map.strip():
+            cmd += ["--number-map", number_map]
         if do_word:
             cmd += ["--word-report"]
     if zip_pdfs:
@@ -679,7 +681,14 @@ with mode_cols[1]:
         unsafe_allow_html=True,
     )
     align_samples = st.text_input("参与比对的样本", "all")
-    number_map = st.text_input("测序编号对应样本编号", DEFAULT_NUMBER_MAP, disabled=not do_sanger)
+    if do_sanger:
+        number_map = st.text_input(
+            "测序编号对应样本编号（可选）",
+            DEFAULT_NUMBER_MAP,
+            help="仅当测序文件名使用 1、2、3 等编号且需要映射到真实样本编号时填写；不需要映射时可留空。",
+        )
+    else:
+        number_map = ""
     p1, p2 = st.columns(2)
     with p1:
         flank = st.number_input("两侧延伸 bp", min_value=0, max_value=5000, value=500, step=50)
