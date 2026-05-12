@@ -37,21 +37,28 @@ st.markdown(
         --muted: #667085;
         --line: #e6e9ef;
         --panel: #f8fafc;
-        --panel-strong: #eef4ff;
+        --panel-strong: #eef7f8;
         --accent: #1f7a8c;
         --accent-2: #7a9a01;
         --good: #087443;
         --warn: #9a5b00;
         --bad: #b42318;
     }
+    .stApp {
+        background: #f6f8fb;
+        color: var(--ink);
+    }
     .block-container {
-        padding-top: 1.1rem;
+        padding-top: 1rem;
         padding-bottom: 2.8rem;
         max-width: 1480px;
     }
     [data-testid="stSidebar"] {
-        background: #fbfcfe;
+        background: #ffffff;
         border-right: 1px solid var(--line);
+    }
+    [data-testid="stSidebarContent"] {
+        background: #ffffff;
     }
     [data-testid="stSidebar"] h2,
     [data-testid="stSidebar"] h3 {
@@ -64,62 +71,51 @@ st.markdown(
     h1 {font-size: 2rem; margin-bottom: .25rem;}
     h2 {font-size: 1.18rem; margin-top: 1.1rem;}
     h3 {font-size: 1rem;}
-    .hero {
+    .app-header {
         border: 1px solid var(--line);
         border-radius: 8px;
-        padding: 1.25rem 1.35rem;
-        background: linear-gradient(135deg, #f7fbfc 0%, #f8fafc 48%, #f4f8ee 100%);
-        margin-bottom: 1rem;
+        padding: 1rem 1.1rem;
+        background: #ffffff;
+        margin-bottom: .9rem;
     }
-    .hero-title {
-        font-size: 2.05rem;
+    .app-title {
+        font-size: 1.72rem;
         line-height: 1.15;
         font-weight: 760;
         color: var(--ink);
-        margin: 0 0 .45rem 0;
+        margin: 0 0 .28rem 0;
     }
-    .hero-copy {
+    .app-copy {
         max-width: 880px;
         color: #475467;
-        font-size: 1rem;
-        line-height: 1.62;
+        font-size: .96rem;
+        line-height: 1.55;
         margin: 0;
     }
-    .step-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: .75rem;
-        margin-top: 1rem;
+    .flow-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .5rem;
+        margin-top: .75rem;
     }
-    .step-card {
+    .flow-chip {
         border: 1px solid var(--line);
-        border-radius: 8px;
-        background: rgba(255,255,255,.76);
-        padding: .8rem .9rem;
+        border-radius: 999px;
+        background: #f8fafc;
+        padding: .38rem .62rem;
+        color: #344054;
+        font-size: .86rem;
     }
-    .step-label {
+    .flow-chip strong {
         color: var(--accent);
         font-weight: 760;
-        font-size: .83rem;
-        margin-bottom: .25rem;
-    }
-    .step-card strong {
-        display: block;
-        color: var(--ink);
-        font-size: .97rem;
-        margin-bottom: .12rem;
-    }
-    .step-card span {
-        color: var(--muted);
-        font-size: .88rem;
-        line-height: 1.45;
+        margin-right: .25rem;
     }
     .section-kicker {
         font-size: .78rem;
         font-weight: 760;
         color: var(--accent);
-        text-transform: uppercase;
-        letter-spacing: .04em;
+        letter-spacing: 0;
         margin: .15rem 0 .45rem;
     }
     .status-card {
@@ -196,9 +192,22 @@ st.markdown(
         border-radius: 8px 8px 0 0;
         padding: .55rem .8rem;
     }
+    [data-testid="stFileUploader"] section {
+        background: #f8fafc;
+        border: 1px dashed #cfd6e3;
+        border-radius: 8px;
+        color: var(--ink);
+    }
+    [data-testid="stFileUploader"] small,
+    [data-testid="stFileUploader"] p {
+        color: #667085 !important;
+    }
+    [data-testid="stBaseButton-secondary"],
+    [data-testid="stBaseButton-primary"] {
+        border-radius: 8px;
+    }
     @media (max-width: 900px) {
-        .step-grid {grid-template-columns: 1fr;}
-        .hero-title {font-size: 1.55rem;}
+        .app-title {font-size: 1.42rem;}
     }
     </style>
     """,
@@ -524,27 +533,16 @@ cleanup_old_sessions()
 
 st.markdown(
     """
-    <div class="hero">
-        <div class="hero-title">多序列比对分析平台</div>
-        <p class="hero-copy">
+    <div class="app-header">
+        <div class="app-title">多序列比对分析平台</div>
+        <p class="app-copy">
             上传引物表与样本 FASTA，在线生成理论扩增片段、多样本序列比对、变异位点表和可下载结果包。
         </p>
-        <div class="step-grid">
-            <div class="step-card">
-                <div class="step-label">STEP 01</div>
-                <strong>上传数据</strong>
-                <span>提供引物表 Excel 和一个或多个样本 FASTA。</span>
-            </div>
-            <div class="step-card">
-                <div class="step-label">STEP 02</div>
-                <strong>选择分析</strong>
-                <span>生成理论扩增片段、多序列比对和可选测序验证。</span>
-            </div>
-            <div class="step-card">
-                <div class="step-label">STEP 03</div>
-                <strong>下载结果</strong>
-                <span>分析完成后下载包含 PDF、表格和报告的压缩包。</span>
-            </div>
+        <div class="flow-row">
+            <span class="flow-chip"><strong>1</strong>上传 Excel 与 FASTA</span>
+            <span class="flow-chip"><strong>2</strong>选择分析模块</span>
+            <span class="flow-chip"><strong>3</strong>查看比对预览</span>
+            <span class="flow-chip"><strong>4</strong>下载 PDF 或完整结果</span>
         </div>
     </div>
     """,
@@ -552,7 +550,7 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.markdown('<div class="section-kicker">Data</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">数据</div>', unsafe_allow_html=True)
     st.subheader("上传数据")
     primer_upload = st.file_uploader("引物表 Excel", type=["xlsx"])
     fasta_uploads = st.file_uploader(
@@ -561,7 +559,7 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
-    st.markdown('<div class="section-kicker">Modules</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">分析</div>', unsafe_allow_html=True)
     st.subheader("分析内容")
     do_stage1 = st.checkbox("理论扩增片段 PDF", value=True)
     do_align = st.checkbox("多样本序列比对 PDF", value=True)
@@ -576,14 +574,14 @@ with st.sidebar:
         disabled=not do_sanger,
     )
 
-    st.markdown('<div class="section-kicker">Settings</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">参数</div>', unsafe_allow_html=True)
     st.subheader("参数设置")
     align_samples = st.text_input("参与比对的样本", "all", help="填写 all，或用英文逗号分隔 FASTA 文件名对应的样本名。")
     number_map = st.text_input("测序编号对应样本编号", DEFAULT_NUMBER_MAP, disabled=not do_sanger)
     flank = st.number_input("两侧延伸长度 bp", min_value=0, max_value=5000, value=500, step=50)
     max_product = st.number_input("最大理论扩增长度 bp", min_value=100, max_value=50000, value=5000, step=100)
 
-    st.markdown('<div class="section-kicker">Colors</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">颜色</div>', unsafe_allow_html=True)
     st.subheader("碱基颜色")
     color_left, color_right = st.columns(2)
     with color_left:
