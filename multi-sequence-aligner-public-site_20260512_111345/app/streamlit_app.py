@@ -529,6 +529,8 @@ def make_result_zip(result_dir: Path) -> Path:
 
 def preview_rank(path: Path) -> int:
     text = str(path).lower()
+    if "cluster_tree" in text or "upgma_tree" in text:
+        return -1
     if "02_direct_sequence_alignment" in text or "direct_alignment" in text:
         return 0
     if "02_multi_sequence_alignment" in text or ".alignment" in text:
@@ -551,7 +553,7 @@ def result_assets(result_dir: Path) -> tuple[list[Path], list[Path]]:
 def result_data_assets(result_dir: Path) -> list[Path]:
     if not result_dir.exists():
         return []
-    suffixes = {".csv", ".fasta", ".fa", ".newick", ".docx"}
+    suffixes = {".csv", ".fasta", ".fa", ".newick", ".svg", ".docx"}
     return sorted(
         [p for p in result_dir.glob("**/*") if p.is_file() and p.suffix.lower() in suffixes],
         key=lambda p: (preview_rank(p), str(p).lower()),
@@ -564,6 +566,7 @@ def asset_label(path: Path, root: Path) -> str:
     label = label.replace("01_sample_amplicon_reports / pdf /", "理论扩增 PDF / ")
     label = label.replace("02_direct_sequence_alignment / html /", "直接多序列比对 / ")
     label = label.replace("02_direct_sequence_alignment / pdf /", "直接多序列比对 PDF / ")
+    label = label.replace("02_direct_sequence_alignment / figures /", "聚类树图 / ")
     label = label.replace("02_direct_sequence_alignment / analysis_tables /", "直接比对表格 / ")
     label = label.replace("02_direct_sequence_alignment / consensus_fasta /", "直接比对 FASTA / ")
     label = label.replace("02_direct_sequence_alignment / alignment_fasta /", "直接比对 FASTA / ")
@@ -583,6 +586,8 @@ def mime_for_download(path: Path) -> str:
         return "text/csv"
     if ext in {".fasta", ".fa", ".newick"}:
         return "text/plain"
+    if ext == ".svg":
+        return "image/svg+xml"
     if ext == ".docx":
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return "application/octet-stream"
@@ -854,7 +859,7 @@ with mode_cols[1]:
             max_value=200000,
             value=3000,
             step=500,
-            help="长序列绘制完整彩色碱基图会明显变慢；超过该长度时仍会生成完整 alignment FASTA 和所有统计表。填 0 表示不限制。",
+            help="长序列绘制完整彩色碱基图会明显变慢；超过该长度时仍会生成完整 alignment FASTA 和统计表。填 0 表示跳过完整大图，速度最快。",
         )
     else:
         max_render_cols = 3000

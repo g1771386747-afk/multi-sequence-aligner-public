@@ -39,6 +39,10 @@ BASE_COLORS = {
     "-": "#d9d9d9",
     "N": "#eeeeee",
 }
+MAX_VARIANT_TABLE_ROWS = 50_000
+MAX_VARIANT_MATRIX_COLS = 250
+MAX_GROUP_DIFF_ROWS = 50_000
+MAX_HAPLOTYPE_SIGNATURE_SITES = 200
 
 DNA_LETTERS = set("ACGTRYSWKMBDHVN")
 CORE_BASES = set("ACGT")
@@ -917,7 +921,7 @@ def direct_msa(records: list[tuple[str, str]], use_mafft: bool = False) -> tuple
     return msa_to_first(records), "built_in_pairwise_fallback"
 
 
-def variant_columns(aln: list[tuple[str, str]]) -> list[int]:
+def variant_columns(aln: list[tuple[str, str]], limit: int | None = None) -> list[int]:
     if not aln:
         return []
     length = len(aln[0][1])
@@ -926,12 +930,14 @@ def variant_columns(aln: list[tuple[str, str]]) -> list[int]:
         states = {seq[i] for _, seq in aln if seq[i] not in {"N", "?"}}
         if len(states) > 1:
             cols.append(i)
+            if limit is not None and len(cols) >= limit:
+                break
     return cols
 
 
-def variant_rows_from_alignment(aln: list[tuple[str, str]], position_labels: dict[int, str] | None = None) -> list[dict]:
+def variant_rows_from_alignment(aln: list[tuple[str, str]], position_labels: dict[int, str] | None = None, limit: int | None = None) -> list[dict]:
     rows: list[dict] = []
-    for pos in variant_columns(aln):
+    for pos in variant_columns(aln, limit):
         states = "".join(sorted({seq[pos] for _, seq in aln}))
         typ = "InDel" if "-" in states else "SNV"
         label = (position_labels or {}).get(pos, str(pos + 1))
@@ -1031,19 +1037,26 @@ def alignment_summary_stats(aln: list[tuple[str, str]], variant_rows: list[dict]
         }
     length = len(aln[0][1])
     conserved = 0
+    variant_total = 0
+    snp = 0
+    indel = 0
     for col in range(length):
         states = {seq[col] for _, seq in aln if seq[col] not in {"N", "?"}}
         if len(states) == 1:
             conserved += 1
-    snp = sum(1 for row in variant_rows if row.get("type") == "SNV")
-    indel = sum(1 for row in variant_rows if row.get("type") == "InDel")
+        elif len(states) > 1:
+            variant_total += 1
+            if "-" in states:
+                indel += 1
+            else:
+                snp += 1
     raw_lengths = [len(r.seq) for r in raw_records]
     return {
         "samples": len(aln),
         "alignment_length": length,
         "min_raw_length": min(raw_lengths) if raw_lengths else 0,
         "max_raw_length": max(raw_lengths) if raw_lengths else 0,
-        "variant_sites": len(variant_rows),
+        "variant_sites": variant_total,
         "snp_sites": snp,
         "indel_sites": indel,
         "conserved_sites": conserved,
@@ -1139,7 +1152,7 @@ def identity_heatmap_svg(square_rows: list[dict], title: str = "样本两两相�
     return "\n".join(parts)
 
 
-def group_comparison_rows(aln: list[tuple[str, str]], group_a: set[str], group_b: set[str], position_labels: dict[int, str]) -> list[dict]:
+def group_comparison_rows(aln: list[tuple[str, str]], group_a: set[str], group_b: set[str], position_labels: dict[int, str], limit: int | None = MAX_GROUP_DIFF_ROWS) -> list[dict]:
     if not aln or not group_a or not group_b:
         return []
     lookup = {name: seq for name, seq in aln}
@@ -1163,17 +1176,20 @@ def group_comparison_rows(aln: list[tuple[str, str]], group_a: set[str], group_b
                     "group_b_samples": ";".join(b_names),
                 }
             )
+            if limit is not None and len(rows) >= limit:
+                break
     return rows
 
 
-def variant_matrix_rows(aln: list[tuple[str, str]], variant_rows: list[dict]) -> list[dict]:
+def variant_matrix_rows(aln: list[tuple[str, str]], variant_rows: list[dict], max_cols: int = MAX_VARIANT_MATRIX_COLS) -> list[dict]:
     if not aln or not variant_rows:
         return []
-    cols = [int(row["alignment_col"]) - 1 for row in variant_rows]
+    source_rows = variant_rows[:max(0, max_cols)]
+    cols = [int(row["alignment_col"]) - 1 for row in source_rows]
     rows: list[dict] = []
     for name, seq in aln:
         row = {"sample": name}
-        for source, col in zip(variant_rows, cols):
+        for source, col in zip(source_rows, cols):
             label = source.get("position_label") or source.get("alignment_col")
             row[str(label)] = seq[col]
         rows.append(row)
@@ -1184,12 +1200,14 @@ def haplotype_rows(aln: list[tuple[str, str]], variant_rows: list[dict]) -> tupl
     groups: dict[str, list[str]] = {}
     for name, seq in aln:
         groups.setdefault(seq, []).append(name)
-    var_cols = [int(row["alignment_col"]) - 1 for row in variant_rows]
+    var_cols = [int(row["alignment_col"]) - 1 for row in variant_rows[:MAX_HAPLOTYPE_SIGNATURE_SITES]]
     rows: list[dict] = []
     fasta_rows: list[tuple[str, str]] = []
     for idx, (seq, samples) in enumerate(sorted(groups.items(), key=lambda item: (-len(item[1]), item[1][0])), 1):
         hap_id = f"H{idx}"
         signature = "".join(seq[col] for col in var_cols) if var_cols else "no_variant"
+        if len(variant_rows) > MAX_HAPLOTYPE_SIGNATURE_SITES:
+            signature += f"...({len(variant_rows)} stored variant sites)"
         ungapped = seq.replace("-", "")
         rows.append(
             {
@@ -1493,6 +1511,7 @@ def stage2_alignment_reports(
     stage = root / "02_multi_sequence_alignment"
     pdf_dir = stage / "pdf"
     html_dir = stage / "html"
+    figures_dir = stage / "figures"
     fasta_dir = stage / "alignment_fasta"
     table_dir = stage / "variant_tables"
     if align_samples.lower() == "all":
@@ -1575,6 +1594,7 @@ def direct_alignment_report(
     stage = root / "02_direct_sequence_alignment"
     pdf_dir = stage / "pdf"
     html_dir = stage / "html"
+    figures_dir = stage / "figures"
     fasta_dir = stage / "alignment_fasta"
     table_dir = stage / "variant_tables"
     stats_dir = stage / "analysis_tables"
@@ -1596,15 +1616,18 @@ def direct_alignment_report(
             else:
                 position_labels[col] = f"gap_after_{ref_pos}"
     alignment_len = len(aln[0][1]) if aln else 0
-    if max_render_cols > 0 and alignment_len > max_render_cols:
-        variant_rows = variant_rows_from_alignment(aln, position_labels)
+    if max_render_cols <= 0 or alignment_len > max_render_cols:
+        variant_rows = variant_rows_from_alignment(aln, position_labels, MAX_VARIANT_TABLE_ROWS)
+        limit_text = "已选择跳过完整彩色碱基图" if max_render_cols <= 0 else f"超过当前绘图上限 {max_render_cols} bp"
         svg = (
             "<div style='border:1px solid #d0d5dd;border-radius:8px;padding:12px;background:#f8fafc'>"
-            f"<b>完整碱基图已自动跳过</b><p>本次比对长度为 {alignment_len} bp，超过当前绘图上限 {max_render_cols} bp。"
+            f"<b>完整碱基图已自动跳过</b><p>本次比对长度为 {alignment_len} bp，{limit_text}。"
             "为加快分析，页面优先生成结果概览、变异位点矩阵、单倍型、相似度矩阵和完整 alignment FASTA。</p></div>"
         )
     else:
         svg, variant_rows = alignment_pdf_svg(aln, title, colors, position_labels, primer_marks=None, chunk_size=90)
+        if len(variant_rows) > MAX_VARIANT_TABLE_ROWS:
+            variant_rows = variant_rows[:MAX_VARIANT_TABLE_ROWS]
     variant_path = table_dir / "direct_alignment.variant_sites.csv"
     write_csv(variant_path, variant_rows, ["alignment_col", "position_label", "type", "states"])
     quality_rows = input_quality_report(records)
@@ -1613,7 +1636,7 @@ def direct_alignment_report(
     pairwise_long, pairwise_square = pairwise_identity_rows(aln)
     consensus_seq = consensus_from_alignment(aln)
     group_rows = group_comparison_rows(aln, parse_sample_list(group_a), parse_sample_list(group_b), position_labels)
-    variant_matrix = variant_matrix_rows(aln, variant_rows)
+    variant_matrix = variant_matrix_rows(aln, variant_rows, MAX_VARIANT_MATRIX_COLS)
     hap_rows, hap_fasta_rows = haplotype_rows(aln, variant_rows)
     tree_root = upgma_tree(aln)
     tree_text = tree_newick(tree_root)
@@ -1623,12 +1646,20 @@ def direct_alignment_report(
     square_fields = ["sample"] + [name for name, _ in aln]
     write_csv(stats_dir / "pairwise_identity_matrix.csv", pairwise_square, square_fields)
     write_csv(stats_dir / "group_fixed_differences.csv", group_rows, ["alignment_col", "position_label", "group_a_base", "group_b_base", "type", "group_a_samples", "group_b_samples"])
-    variant_matrix_fields = ["sample"] + [str(row.get("position_label") or row.get("alignment_col")) for row in variant_rows]
+    matrix_source_rows = variant_rows[:MAX_VARIANT_MATRIX_COLS]
+    variant_matrix_fields = ["sample"] + [str(row.get("position_label") or row.get("alignment_col")) for row in matrix_source_rows]
     write_csv(stats_dir / "variant_site_matrix.csv", variant_matrix, variant_matrix_fields)
     write_csv(stats_dir / "haplotypes.csv", hap_rows, ["haplotype", "sample_count", "samples", "variant_signature", "sequence_length_no_gaps"])
     write_csv(
         stats_dir / "analysis_overview.csv",
-        [{"metric": "alignment_method", "value": alignment_method}] + [{"metric": key, "value": value} for key, value in stats.items()],
+        [
+            {"metric": "alignment_method", "value": alignment_method},
+            {"metric": "variant_table_rows_written", "value": len(variant_rows)},
+            {"metric": "variant_matrix_columns_written", "value": len(matrix_source_rows)},
+            {"metric": "group_fixed_difference_rows_written", "value": len(group_rows)},
+            {"metric": "large_result_policy", "value": f"variant table limited to {MAX_VARIANT_TABLE_ROWS} rows; matrix limited to {MAX_VARIANT_MATRIX_COLS} variant columns"},
+        ]
+        + [{"metric": key, "value": value} for key, value in stats.items()],
         ["metric", "value"],
     )
     consensus_path = consensus_dir / "direct_alignment_consensus.fasta"
@@ -1643,17 +1674,31 @@ def direct_alignment_report(
     tree_path.write_text(tree_text + "\n", encoding="utf-8")
     heatmap_svg = identity_heatmap_svg(pairwise_square)
     tree_svg = upgma_tree_svg(tree_root)
+    tree_svg_path = figures_dir / "upgma_tree.svg"
+    tree_svg_path.parent.mkdir(parents=True, exist_ok=True)
+    tree_svg_path.write_text(tree_svg, encoding="utf-8")
+    tree_html_path = html_dir / "cluster_tree.html"
+    tree_body = (
+        "<h1>UPGMA 样本聚类树</h1>"
+        f"<p>Samples: {len(seqs)} aligned. Alignment method: {html.escape(alignment_method)}. "
+        "距离基于 pairwise identity 自动估算，用于快速查看样本接近关系。</p>"
+        f"<div>{tree_svg}</div>"
+        f"<h2>Newick</h2><pre>{html.escape(tree_text)}</pre>"
+    )
+    tree_html_path.parent.mkdir(parents=True, exist_ok=True)
+    tree_html_path.write_text(html_doc("UPGMA cluster tree", tree_body, landscape=True), encoding="utf-8")
     summary = [
         {
             "alignment": "direct_alignment",
             "aligned_samples": len(seqs),
             "alignment_method": alignment_method,
             "haplotypes": len(hap_rows),
-            "variant_sites": len(variant_rows),
+            "variant_sites": stats["variant_sites"],
             "snp_sites": stats["snp_sites"],
             "indel_sites": stats["indel_sites"],
             "conserved_percent": stats["conserved_percent"],
             "html": str(html_dir / "direct_alignment.html"),
+            "cluster_tree_html": str(tree_html_path),
             "pdf": str(pdf_dir / "direct_alignment.pdf") if make_pdf else "",
             "alignment_fasta": str(fasta_path),
             "consensus_fasta": str(consensus_path),
@@ -1663,6 +1708,7 @@ def direct_alignment_report(
             "haplotype_table": str(stats_dir / "haplotypes.csv"),
             "pairwise_identity_matrix": str(stats_dir / "pairwise_identity_matrix.csv"),
             "upgma_tree_newick": str(tree_path),
+            "upgma_tree_svg": str(tree_svg_path),
             "group_fixed_differences": str(stats_dir / "group_fixed_differences.csv"),
         }
     ]
@@ -1707,6 +1753,7 @@ def direct_alignment_report(
             "indel_sites",
             "conserved_percent",
             "html",
+            "cluster_tree_html",
             "pdf",
             "alignment_fasta",
             "consensus_fasta",
@@ -1716,6 +1763,7 @@ def direct_alignment_report(
             "haplotype_table",
             "pairwise_identity_matrix",
             "upgma_tree_newick",
+            "upgma_tree_svg",
             "group_fixed_differences",
         ],
     )
